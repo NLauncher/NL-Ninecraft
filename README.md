@@ -1,4 +1,9 @@
 # Ninecraft
+## Changes in NLauncher fork
+- Switching between slots using number keys
+- Fixed audio issues for Linux
+- Instant activation of the input field in the chat upon opening it
+- Fixed the key bindings depending on on the keyboard layout
 
 ![alt screenshot](https://raw.githubusercontent.com/MCPI-Revival/Ninecraft/master/screenshots/0.6.1-menu.png)
 

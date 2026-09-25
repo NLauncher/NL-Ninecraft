@@ -2071,12 +2071,12 @@ void fmod_anjni() {
 }
 
 SYSV_WRAPPER(xbox_read_config_file, 2);
-static void xbox_read_config_file(android_string_t *ret, void *java_interop) {
+void xbox_read_config_file(android_string_t *ret, void *java_interop) {
     android_string_cstr(ret, "{}");
 }
 
 SYSV_WRAPPER(xbox_get_local_storage_path, 2);
-static void xbox_get_local_storage_path(android_string_t *ret, void *java_interop) {
+void xbox_get_local_storage_path(android_string_t *ret, void *java_interop) {
     char path[1024];
     path[0] = '\0';
     if (game_parameters.home_path) {
@@ -2087,7 +2087,7 @@ static void xbox_get_local_storage_path(android_string_t *ret, void *java_intero
 }
 
 SYSV_WRAPPER(xbox_init_cll, 3);
-static void xbox_init_cll(void *ret, void *java_interop, void *str) {
+void xbox_init_cll(void *ret, void *java_interop, void *str) {
     void *(*error_cat)() = (void *(*)())android_dlsym(handle, "_ZN4xbox8services33xbox_services_error_code_categoryEv");
     *(int *)((char *)ret + 0) = 0;
     *(void **)((char *)ret + 4) = error_cat ? error_cat() : NULL;
@@ -2095,7 +2095,7 @@ static void xbox_init_cll(void *ret, void *java_interop, void *str) {
 }
 
 SYSV_WRAPPER(xbox_log_cll, 5);
-static void xbox_log_cll(void *ret, void *java_interop, void *s1, void *s2, void *s3) {
+void xbox_log_cll(void *ret, void *java_interop, void *s1, void *s2, void *s3) {
     void *(*error_cat)() = (void *(*)())android_dlsym(handle, "_ZN4xbox8services33xbox_services_error_code_categoryEv");
     *(int *)((char *)ret + 0) = 0;
     *(void **)((char *)ret + 4) = error_cat ? error_cat() : NULL;
@@ -2107,7 +2107,7 @@ static void *xbox_get_java_vm(void *java_interop) {
 }
 
 SYSV_WRAPPER(xbox_init_sign_in_activity, 3);
-static void xbox_init_sign_in_activity(void *ret, void *user_impl, int arg) {
+void xbox_init_sign_in_activity(void *ret, void *user_impl, int arg) {
     void *(*error_cat)() = (void *(*)())android_dlsym(handle, "_ZN4xbox8services33xbox_services_error_code_categoryEv");
     *(int *)((char *)ret + 0) = 0;
     *(void **)((char *)ret + 4) = error_cat ? error_cat() : NULL;

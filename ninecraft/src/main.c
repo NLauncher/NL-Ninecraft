@@ -7,6 +7,7 @@
 #include <time.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#ifndef _WIN32
 #include <unistd.h>
 #include <utime.h>
 #include <sys/epoll.h>
@@ -16,7 +17,6 @@
 #include <net/if.h>
 #include <netdb.h>
 #include <pthread.h>
-#ifndef _WIN32
 #include <sys/mman.h>
 #else
 #include <direct.h>
@@ -1602,7 +1602,11 @@ typedef struct __pthread_cleanup_t {
     void *__cleanup_arg;
 } __pthread_cleanup_t;
 
+#ifdef _MSC_VER
+static __declspec(thread) __pthread_cleanup_t* __cleanup_stack = NULL;
+#else
 static __thread __pthread_cleanup_t* __cleanup_stack = NULL;
+#endif
 
 void __my_pthread_cleanup_push(__pthread_cleanup_t* c, void (*routine)(void *), void *arg) {
     c->__cleanup_routine = routine;
@@ -1642,6 +1646,7 @@ void missing_hook() {
     add_custom_hook("__srget", __my_srget);
     add_custom_hook("__pthread_cleanup_push", (void *)__my_pthread_cleanup_push);
     add_custom_hook("__pthread_cleanup_pop", (void *)__my_pthread_cleanup_pop);
+#ifndef _WIN32
     add_custom_hook("fseeko", (void *)fseeko);
     add_custom_hook("ftello", (void *)ftello);
     add_custom_hook("fmaxf", (void *)fmaxf);
@@ -1673,6 +1678,7 @@ void missing_hook() {
     add_custom_hook("getnameinfo", (void *)getnameinfo);
     add_custom_hook("pthread_attr_getdetachstate", (void *)android_pthread_attr_getdetachstate);
     add_custom_hook("clock", (void *)clock);
+#endif
 }
 
 unsigned char mcpi_api_initialized = 0;
@@ -2070,12 +2076,17 @@ void fmod_anjni() {
     anjni_add_method(org_fmod_audiodevice, ANJNI_METHOD_TYPE_VOID, "close", "()V", 0, 0, org_fmod_audiodevice_close);
 }
 
-SYSV_WRAPPER(xbox_read_config_file, 2);
+void xbox_read_config_file(android_string_t *ret, void *java_interop);
+void xbox_get_local_storage_path(android_string_t *ret, void *java_interop);
+void xbox_init_cll(void *ret, void *java_interop, void *str);
+void xbox_log_cll(void *ret, void *java_interop, void *s1, void *s2, void *s3);
+void xbox_init_sign_in_activity(void *ret, void *user_impl, int arg);
+
 void xbox_read_config_file(android_string_t *ret, void *java_interop) {
     android_string_cstr(ret, "{}");
 }
+SYSV_WRAPPER(xbox_read_config_file, 2);
 
-SYSV_WRAPPER(xbox_get_local_storage_path, 2);
 void xbox_get_local_storage_path(android_string_t *ret, void *java_interop) {
     char path[1024];
     path[0] = '\0';
@@ -2085,34 +2096,35 @@ void xbox_get_local_storage_path(android_string_t *ret, void *java_interop) {
     }
     android_string_cstr(ret, path);
 }
+SYSV_WRAPPER(xbox_get_local_storage_path, 2);
 
-SYSV_WRAPPER(xbox_init_cll, 3);
 void xbox_init_cll(void *ret, void *java_interop, void *str) {
     void *(*error_cat)() = (void *(*)())android_dlsym(handle, "_ZN4xbox8services33xbox_services_error_code_categoryEv");
     *(int *)((char *)ret + 0) = 0;
     *(void **)((char *)ret + 4) = error_cat ? error_cat() : NULL;
     android_string_cstr((android_string_t *)((char *)ret + 8), "");
 }
+SYSV_WRAPPER(xbox_init_cll, 3);
 
-SYSV_WRAPPER(xbox_log_cll, 5);
 void xbox_log_cll(void *ret, void *java_interop, void *s1, void *s2, void *s3) {
     void *(*error_cat)() = (void *(*)())android_dlsym(handle, "_ZN4xbox8services33xbox_services_error_code_categoryEv");
     *(int *)((char *)ret + 0) = 0;
     *(void **)((char *)ret + 4) = error_cat ? error_cat() : NULL;
     android_string_cstr((android_string_t *)((char *)ret + 8), "");
 }
+SYSV_WRAPPER(xbox_log_cll, 5);
 
 static void *xbox_get_java_vm(void *java_interop) {
     return android_JavaVM;
 }
 
-SYSV_WRAPPER(xbox_init_sign_in_activity, 3);
 void xbox_init_sign_in_activity(void *ret, void *user_impl, int arg) {
     void *(*error_cat)() = (void *(*)())android_dlsym(handle, "_ZN4xbox8services33xbox_services_error_code_categoryEv");
     *(int *)((char *)ret + 0) = 0;
     *(void **)((char *)ret + 4) = error_cat ? error_cat() : NULL;
     android_string_cstr((android_string_t *)((char *)ret + 8), "");
 }
+SYSV_WRAPPER(xbox_init_sign_in_activity, 3);
 
 typedef struct {
     void *group;

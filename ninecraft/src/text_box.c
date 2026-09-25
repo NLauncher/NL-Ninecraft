@@ -49,7 +49,7 @@ void text_box_keyboard_new_char(text_box_t *__this, char c) {
 
 void text_box_keyboard_key_pressed(text_box_t *__this, char code) {
     if (__this->is_modifyable && __this->is_focused) {
-        if (code == MCKEY_SIGN_ENTER) {
+        if (code == MCKEY_SIGN_ENTER || code == 10 || code == '\n' || code == '\r') {
             __this->is_finished = true;
             __this->is_focused = false;
         } else if (code == MCKEY_SIGN_BACKSPACE) {
@@ -75,7 +75,25 @@ void text_box_render(text_box_t *__this, void *minecraft, int x, int y) {
     gui_component_fill(__this, __this->x, __this->y, __this->x + __this->width, __this->y + __this->height, 0xff373535);
     gui_component_draw_rect(__this, __this->x, __this->y, __this->x + __this->width, __this->y + __this->height, box_outline_color, 1);
     if (__this->text && __this->text_len != 0) {
-        android_string_cstrl(&str, __this->text, __this->text_len);
+        android_string_t cur_str;
+        int text_w = 0;
+        int cur_w = 0;
+        int i;
+        android_string_cstr(&cur_str, "_");
+        cur_w = ((int (*)(void *__this, android_string_t *text))android_dlsym(handle, "_ZN4Font5widthERKSs"))(*((void **)minecraft + 174), &cur_str);
+        android_string_destroy(&cur_str);
+
+        for (i = 0; i < __this->text_len; ++i) {
+            android_string_cstrl(&str, &__this->text[i], __this->text_len - i);
+            text_w = ((int (*)(void *__this, android_string_t *text))android_dlsym(handle, "_ZN4Font5widthERKSs"))(*((void **)minecraft + 174), &str);
+            if ((text_w + cur_w) < (__this->width - 20)) {
+                break;
+            }
+            android_string_destroy(&str);
+        }
+        if (i == __this->text_len) {
+            android_string_cstr(&str, "");
+        }
     } else if (!__this->is_focused && __this->placeholder) {
         android_string_cstr(&str, __this->placeholder);
         ((FLOAT_ABI_FIX void (*)(void *__this, android_string_t *text, float x, float y, int z, bool u))android_dlsym(handle, "_ZN4Font4drawERKSsffib"))(*((void **)minecraft + 174), &str, __this->x + 10.0, __this->y + 5.0, 0xff808080, false);

@@ -44,6 +44,9 @@ typedef union {
 extern ninecraft_options_t platform_options;
 extern bool is_keyboard_visible;
 
+EXTERN_SYSV_WRAPPER(AppPlatform_linux$getDataUrl);
+void AppPlatform_linux$getDataUrl(android_string_t *ret, AppPlatform_linux *app_platform);
+
 void AppPlatform_linux$saveImage(AppPlatform_linux *app_platform, android_string_t *resource_path, android_string_t *pixels, int width, int height);
 
 void AppPlatform_linux$swapBuffers(AppPlatform_linux *app_platform);
@@ -200,6 +203,12 @@ android_string_t *AppPlatform_linux$getExternalStoragePath(AppPlatform_linux *ap
 
 android_string_t *AppPlatform_linux$getInternalStoragePath(AppPlatform_linux *app_platform);
 
+android_string_t *AppPlatform_linux$getUserdataPath(AppPlatform_linux *app_platform);
+
+android_string_t *AppPlatform_linux$getUserdataPathForLevels(AppPlatform_linux *app_platform);
+
+android_string_t *AppPlatform_linux$getPlatformTempPath(AppPlatform_linux *app_platform);
+
 EXTERN_SYSV_WRAPPER(AppPlatform_linux$getApplicationId);
 void AppPlatform_linux$getApplicationId(android_string_t *ret, AppPlatform_linux *app_platform);
 
@@ -216,5 +225,34 @@ bool AppPlatform_linux$hasHardwareInformationChanged(AppPlatform_linux *app_plat
 bool AppPlatform_linux$isTablet(AppPlatform_linux *app_platform);
 
 void AppPlatform_linux$pickImage(AppPlatform_linux *__this, image_picking_callback_0_11_0_t *callback);
+
+EXTERN_SYSV_WRAPPER(AppPlatform_linux$getPackagePath);
+void AppPlatform_linux$getPackagePath(android_string_t *ret, AppPlatform_linux *app_platform, android_string_t *package_name);
+
+typedef struct {
+    unsigned char *data_begin;
+    unsigned char *data_end;
+    unsigned char *data_end_cap;
+    uint32_t width;
+    uint32_t height;
+    uint32_t format;
+} texture_data_0_15_1_t;
+
+typedef struct {
+    unsigned char *data_begin;
+    unsigned char *data_end;
+    unsigned char *data_end_cap;
+    uint32_t width;
+    uint32_t height;
+    uint32_t mip_count;
+    uint32_t format;
+} texture_data_0_15_90_t;
+
+void AppPlatform_linux$loadPNG_0_15_0(AppPlatform_linux *app_platform, texture_data_0_15_1_t *image, android_string_t *resource_path);
+void AppPlatform_linux$loadTGA_0_15_0(AppPlatform_linux *app_platform, texture_data_0_15_1_t *image, android_string_t *resource_path);
+void AppPlatform_linux$loadPNG_0_15_1(AppPlatform_linux *app_platform, texture_data_0_15_1_t *image, android_string_t *resource_path);
+void AppPlatform_linux$loadTGA_0_15_1(AppPlatform_linux *app_platform, texture_data_0_15_1_t *image, android_string_t *resource_path);
+void AppPlatform_linux$loadPNG_0_15_90(AppPlatform_linux *app_platform, texture_data_0_15_90_t *image, android_string_t *resource_path);
+void AppPlatform_linux$loadTGA_0_15_90(AppPlatform_linux *app_platform, texture_data_0_15_90_t *image, android_string_t *resource_path);
 
 #endif

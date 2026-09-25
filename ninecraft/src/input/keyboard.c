@@ -13,12 +13,14 @@ void keyboard_setup_hooks(void *handle) {
     keyboard_states = (int *)android_dlsym(handle, "_ZN8Keyboard7_statesE");
 }
 
-void keyboard_feed(unsigned char key, int state) {
+void keyboard_feed(int key, int state) {
     keyboard_action_t action;
     action.state = state;
-    action.key = (int)key;
+    action.key = key;
     android_vector_push_back(keyboard_inputs, &action, sizeof(keyboard_action_t));
-    keyboard_states[key] = state;
+    if (keyboard_states && key >= 0 && key < 256) {
+        keyboard_states[key] = state;
+    }
 }
 
 void keyboard_feed_text_0_6_0(char c) {

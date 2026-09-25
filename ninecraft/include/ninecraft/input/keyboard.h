@@ -24,7 +24,7 @@ extern int *keyboard_states;
 
 extern void keyboard_setup_hooks(void *handle);
 
-extern void keyboard_feed(unsigned char key, int state);
+extern void keyboard_feed(int key, int state);
 
 extern void keyboard_feed_text_0_6_0(char c);
 

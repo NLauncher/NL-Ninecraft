@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <stdio.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <ninecraft/android/android_alloc.h>
 #include <ninecraft/version_ids.h>
 #include <ninecraft/audio/sound_repository.h>
@@ -521,6 +523,16 @@ void *app_platform_vtable_0_10_0[] = {
     (void *)AppPlatform_linux$updateStatsUserData,
 };
 
+SYSV_WRAPPER(AppPlatform_linux$getDataUrl, 2)
+void AppPlatform_linux$getDataUrl(android_string_t *ret, AppPlatform_linux *app_platform) {
+    char *str = (char *)malloc(1024);
+    str[0] = '\0';
+    strcat(str, game_parameters.game_path);
+    strcat(str, "/assets/");
+    android_string_cstr(ret, str);
+    free(str);
+}
+
 void AppPlatform_linux$saveImage(AppPlatform_linux *app_platform, android_string_t *resource_path, android_string_t *pixels, int width, int height) {
     //puts("debug: AppPlatform_linux::saveImage");
 }
@@ -576,23 +588,87 @@ bool AppPlatform_linux$hasIDEProfiler(AppPlatform_linux *app_platform) {
     return false;
 }
 
+static char *try_image_candidate(const char *fmt, const char *arg1, const char *arg2) {
+    char buf[1024];
+    struct stat st;
+    snprintf(buf, sizeof(buf), fmt, arg1, arg2);
+    if (stat(buf, &st) == 0 && !S_ISDIR(st.st_mode)) {
+        return strdup(buf);
+    }
+    return NULL;
+}
+
+static char *resolve_asset_path(const char *rel_path) {
+    if (!rel_path || rel_path[0] == '\0') {
+        return NULL;
+    }
+    size_t rlen = strlen(rel_path);
+    if (rel_path[rlen - 1] == '/' || rel_path[rlen - 1] == '\\') {
+        return NULL;
+    }
+    if (strcmp(rel_path, ".") == 0 || strcmp(rel_path, "..") == 0) {
+        return NULL;
+    }
+    struct stat st;
+    if (stat(rel_path, &st) == 0 && !S_ISDIR(st.st_mode)) {
+        return strdup(rel_path);
+    }
+    char *res = NULL;
+    const char *names[4];
+    int count = 0;
+    names[count++] = rel_path;
+    if (strncmp(rel_path, "images/", 7) == 0) {
+        names[count++] = rel_path + 7;
+    } else if (strncmp(rel_path, "textures/", 9) == 0) {
+        names[count++] = rel_path + 9;
+    }
+    for (int i = 0; i < count; ++i) {
+        const char *name = names[i];
+        if ((res = try_image_candidate("%s/overrides/assets/%s", game_parameters.game_path, name))) return res;
+        if ((res = try_image_candidate("%s/global_overrides/assets/%s", game_parameters.home_path, name))) return res;
+        if ((res = try_image_candidate("%s/assets/%s", game_parameters.game_path, name))) return res;
+        if ((res = try_image_candidate("%s/assets/images/%s", game_parameters.game_path, name))) return res;
+        if ((res = try_image_candidate("%s/assets/textures/%s", game_parameters.game_path, name))) return res;
+        if ((res = try_image_candidate("%s/assets/resourcepacks/vanilla/%s", game_parameters.game_path, name))) return res;
+        if ((res = try_image_candidate("%s/assets/resourcepacks/vanilla/images/%s", game_parameters.game_path, name))) return res;
+        if ((res = try_image_candidate("%s/assets/resourcepacks/vanilla/textures/%s", game_parameters.game_path, name))) return res;
+        if ((res = try_image_candidate("%s/assets/resourcepacks/vanilla/client/%s", game_parameters.game_path, name))) return res;
+        if ((res = try_image_candidate("%s/assets/resourcepacks/vanilla/client/images/%s", game_parameters.game_path, name))) return res;
+        if ((res = try_image_candidate("%s/assets/resourcepacks/vanilla/client/textures/%s", game_parameters.game_path, name))) return res;
+    }
+    return NULL;
+}
+
+static char *resolve_image_path(const char *rel_path) {
+    char *res = resolve_asset_path(rel_path);
+    if (res) return res;
+    return rel_path ? strdup(rel_path) : NULL;
+}
+
 void AppPlatform_linux$loadTGA(AppPlatform_linux *app_platform, image_data_t *image, android_string_t *resource_path, bool alpha) {
-    //puts("debug: AppPlatform_linux::loadTGA");
-    int channels;
-    image->pixels = stbi_load(android_string_to_str(resource_path), &image->width, &image->height, &channels, 0);
+    char *res_path = android_string_to_str(resource_path);
+    char *full_path = resolve_image_path(res_path);
+    image->pixels = stbi_load(full_path ? full_path : res_path, &image->width, &image->height, NULL, STBI_rgb_alpha);
+    if (full_path) free(full_path);
 }
 
 void AppPlatform_linux$loadTGA_0_9_0(AppPlatform_linux *app_platform, image_data_0_9_0_t *image, android_string_t *resource_path, bool alpha) {
-    //puts("debug: AppPlatform_linux::loadTGA");
-    int channels;
-    stbi_uc *pixels = stbi_load(android_string_to_str(resource_path), &image->width, &image->height, &channels, 0);
-    android_string_cstrl((android_string_t *)&image->pixels, (char *)pixels, 4 * image->width * image->height);
-    stbi_image_free(pixels);
+    char *res_path = android_string_to_str(resource_path);
+    char *full_path = resolve_image_path(res_path);
+    stbi_uc *pixels = stbi_load(full_path ? full_path : res_path, &image->width, &image->height, NULL, STBI_rgb_alpha);
+    if (full_path) free(full_path);
+    if (pixels) {
+        android_string_cstrl((android_string_t *)&image->pixels, (char *)pixels, 4 * image->width * image->height);
+        stbi_image_free(pixels);
+    } else {
+        image->width = 0;
+        image->height = 0;
+        android_string_cstr((android_string_t *)&image->pixels, "");
+    }
 }
 
 SYSV_WRAPPER(AppPlatform_linux$getImagePath, 4)
 void AppPlatform_linux$getImagePath(android_string_t *ret, AppPlatform_linux *app_platform, android_string_t *resource_path, bool is_full) {
-    //puts("debug: AppPlatform_linux::getImagePath");
     char *resource_path_c = android_string_to_str(resource_path);
     if (is_full) {
         char *str = (char *)malloc(1024);
@@ -608,16 +684,123 @@ void AppPlatform_linux$getImagePath(android_string_t *ret, AppPlatform_linux *ap
 }
 
 void AppPlatform_linux$loadPNG(AppPlatform_linux *app_platform, image_data_t *image, android_string_t *resource_path, bool alpha) {
-    //puts("debug: AppPlatform_linux::loadPNG");
-    image->pixels = stbi_load(android_string_to_str(resource_path), &image->width, &image->height, NULL, STBI_rgb_alpha);
+    char *res_path = android_string_to_str(resource_path);
+    char *full_path = resolve_image_path(res_path);
+    image->pixels = stbi_load(full_path ? full_path : res_path, &image->width, &image->height, NULL, STBI_rgb_alpha);
+    if (full_path) free(full_path);
 }
 
 void AppPlatform_linux$loadPNG_0_9_0(AppPlatform_linux *app_platform, image_data_0_9_0_t *image, android_string_t *resource_path, bool alpha) {
-    //puts("debug: AppPlatform_linux::loadPNG");
+    char *res_path = android_string_to_str(resource_path);
+    char *full_path = resolve_image_path(res_path);
+    stbi_uc *pixels = stbi_load(full_path ? full_path : res_path, &image->width, &image->height, NULL, STBI_rgb_alpha);
+    if (full_path) free(full_path);
+    if (pixels) {
+        android_string_cstrl((android_string_t *)&image->pixels, (char *)pixels, 4 * image->width * image->height);
+        stbi_image_free(pixels);
+    } else {
+        image->width = 0;
+        image->height = 0;
+        android_string_cstr((android_string_t *)&image->pixels, "");
+    }
+}
 
-    stbi_uc *pixels = stbi_load(android_string_to_str(resource_path), &image->width, &image->height, NULL, STBI_rgb_alpha);
-    android_string_cstrl((android_string_t *)&image->pixels, (char *)pixels, 4 * image->width * image->height);
-    stbi_image_free(pixels);
+void AppPlatform_linux$loadPNG_0_15_1(AppPlatform_linux *app_platform, texture_data_0_15_1_t *image, android_string_t *resource_path) {
+    char *res_path = android_string_to_str(resource_path);
+    char *full_path = resolve_image_path(res_path);
+    int w = 0, h = 0;
+    stbi_uc *pixels = stbi_load(full_path ? full_path : res_path, &w, &h, NULL, STBI_rgb_alpha);
+    if (full_path) free(full_path);
+    if (pixels) {
+        size_t size = 4 * w * h;
+        void *buf = malloc(size);
+        if (buf) {
+            memcpy(buf, pixels, size);
+            image->data_begin = (unsigned char *)buf;
+            image->data_end = (unsigned char *)buf + size;
+            image->data_end_cap = (unsigned char *)buf + size;
+            image->width = w;
+            image->height = h;
+            image->format = 0x1c;
+        }
+        stbi_image_free(pixels);
+    }
+}
+
+void AppPlatform_linux$loadTGA_0_15_1(AppPlatform_linux *app_platform, texture_data_0_15_1_t *image, android_string_t *resource_path) {
+    char *res_path = android_string_to_str(resource_path);
+    char *full_path = resolve_image_path(res_path);
+    int w = 0, h = 0;
+    stbi_uc *pixels = stbi_load(full_path ? full_path : res_path, &w, &h, NULL, STBI_rgb_alpha);
+    if (full_path) free(full_path);
+    if (pixels) {
+        size_t size = 4 * w * h;
+        void *buf = malloc(size);
+        if (buf) {
+            memcpy(buf, pixels, size);
+            image->data_begin = (unsigned char *)buf;
+            image->data_end = (unsigned char *)buf + size;
+            image->data_end_cap = (unsigned char *)buf + size;
+            image->width = w;
+            image->height = h;
+            image->format = 0x1c;
+        }
+        stbi_image_free(pixels);
+    }
+}
+
+void AppPlatform_linux$loadPNG_0_15_90(AppPlatform_linux *app_platform, texture_data_0_15_90_t *image, android_string_t *resource_path) {
+    char *res_path = android_string_to_str(resource_path);
+    char *full_path = resolve_image_path(res_path);
+    int w = 0, h = 0;
+    stbi_uc *pixels = stbi_load(full_path ? full_path : res_path, &w, &h, NULL, STBI_rgb_alpha);
+    if (full_path) free(full_path);
+    if (pixels) {
+        size_t size = 4 * w * h;
+        void *buf = malloc(size);
+        if (buf) {
+            memcpy(buf, pixels, size);
+            image->data_begin = (unsigned char *)buf;
+            image->data_end = (unsigned char *)buf + size;
+            image->data_end_cap = (unsigned char *)buf + size;
+            image->width = w;
+            image->height = h;
+            image->mip_count = 1;
+            image->format = 0x1c;
+        }
+        stbi_image_free(pixels);
+    }
+}
+
+void AppPlatform_linux$loadTGA_0_15_90(AppPlatform_linux *app_platform, texture_data_0_15_90_t *image, android_string_t *resource_path) {
+    char *res_path = android_string_to_str(resource_path);
+    char *full_path = resolve_image_path(res_path);
+    int w = 0, h = 0;
+    stbi_uc *pixels = stbi_load(full_path ? full_path : res_path, &w, &h, NULL, STBI_rgb_alpha);
+    if (full_path) free(full_path);
+    if (pixels) {
+        size_t size = 4 * w * h;
+        void *buf = malloc(size);
+        if (buf) {
+            memcpy(buf, pixels, size);
+            image->data_begin = (unsigned char *)buf;
+            image->data_end = (unsigned char *)buf + size;
+            image->data_end_cap = (unsigned char *)buf + size;
+            image->width = w;
+            image->height = h;
+            image->mip_count = 1;
+            image->format = 0x1c;
+        }
+        stbi_image_free(pixels);
+    }
+}
+
+void AppPlatform_linux$loadPNG_0_15_0(AppPlatform_linux *app_platform, texture_data_0_15_1_t *image, android_string_t *resource_path) {
+    AppPlatform_linux$loadPNG_0_9_0(app_platform, (image_data_0_9_0_t *)image, resource_path, true);
+}
+
+void AppPlatform_linux$loadTGA_0_15_0(AppPlatform_linux *app_platform, texture_data_0_15_1_t *image, android_string_t *resource_path) {
+    AppPlatform_linux$loadTGA_0_9_0(app_platform, (image_data_0_9_0_t *)image, resource_path, true);
 }
 
 SYSV_WRAPPER(AppPlatform_linux$getLoginInformation, 2)
@@ -1101,29 +1284,34 @@ FLOAT_ABI_FIX void AppPlatform_linux$playSound(AppPlatform_linux *app_platform, 
 
 SYSV_WRAPPER(AppPlatform_linux$readAssetFile, 3)
 void AppPlatform_linux$readAssetFile(asset_file *ret, AppPlatform_linux *app_platform, android_string_t *path_str) {
-    //puts("debug: AppPlatform_linux::readAssetFile");
-    android_string_t str;
     char *resource = android_string_to_str(path_str);
-    size_t resourcelen = strlen(resource);
-    char *path = (char *)malloc(1024);
-    path[0] = '\0';
-    strcat(path, game_parameters.game_path);
-    strcat(path, "/overrides/assets/");
-    strcat(path, resource);
-    if (access(path, 0) != 0) {
-        path[0] = '\0';
-        strcat(path, game_parameters.home_path);
-        strcat(path, "/global_overrides/assets/");
-        strcat(path, resource);
-        if (access(path, 0) != 0) {
-            path[0] = '\0';
-            strcat(path, game_parameters.game_path);
-            strcat(path, "/assets/");
-            strcat(path, resource);
+    if (!resource || !resource[0]) {
+        asset_file asset;
+        asset.data = NULL;
+        asset.size = -1;
+        *ret = asset;
+        return;
+    }
+    char *path = resolve_asset_path(resource);
+    if (!path) {
+        asset_file asset;
+        if (strcmp(resource, "lang/languages.json") == 0) {
+            asset.data = strdup("[\"en_US\"]");
+            asset.size = (int)strlen(asset.data);
+            *ret = asset;
+            return;
+        } else if (strncmp(resource, "lang/", 5) == 0) {
+            asset.data = strdup("");
+            asset.size = 0;
+            *ret = asset;
+            return;
         }
+        asset.data = NULL;
+        asset.size = -1;
+        *ret = asset;
+        return;
     }
     asset_file asset;
-
     FILE *file = fopen(path, "rb");
     if (!file) {
         printf("Error[%d] failed to read %s\n", errno, path);
@@ -1137,9 +1325,18 @@ void AppPlatform_linux$readAssetFile(asset_file *ret, AppPlatform_linux *app_pla
     free(path);
     fseek(file, 0, SEEK_END);
     asset.size = ftell(file);
-    asset.data = (char *) malloc(asset.size);
+    asset.data = (char *)malloc(asset.size + 1);
+    if (!asset.data) {
+        fclose(file);
+        asset.data = NULL;
+        asset.size = -1;
+        *ret = asset;
+        return;
+    }
     fseek(file, 0, SEEK_SET);
     fread(asset.data, 1, asset.size, file);
+    asset.data[asset.size] = '\0';
+    fclose(file);
 
     *ret = asset;
 }
@@ -1152,6 +1349,9 @@ void AppPlatform_linux$readAssetFile_0_9_0(android_string_t *ret, AppPlatform_li
         android_string_cstr(ret, "");
     } else {
         android_string_cstrl(ret, asset.data, asset.size);
+    }
+    if (asset.data) {
+        free(asset.data);
     }
 }
 
@@ -1187,59 +1387,76 @@ void AppPlatform_linux$destroy(AppPlatform_linux *app_platform) {
     //puts("debug: AppPlatform_linux::destroy");
 }
 
+static android_string_t s_system_region;
+static android_string_t s_storage_path;
+static android_string_t s_worlds_path;
+static bool s_strings_inited = false;
+
+static void init_platform_strings(void) {
+    if (s_strings_inited) return;
+    s_strings_inited = true;
+    android_string_cstr(&s_system_region, "US");
+    char storage_path[1024];
+    storage_path[0] = '\0';
+    strcat(storage_path, game_parameters.home_path);
+    strcat(storage_path, "/storage/");
+    mkdir(game_parameters.home_path, 0777);
+    mkdir(storage_path, 0777);
+    android_string_cstr(&s_storage_path, storage_path);
+}
+
 android_string_t *AppPlatform_linux$getSystemRegion(AppPlatform_linux *app_platform) {
-    //puts("debug: AppPlatform_linux::getSystemRegion");
-    android_string_t *str = (android_string_t *)malloc(sizeof(android_string_t));
-    android_string_cstr(str, "US");
-    return str;
+    init_platform_strings();
+    return &s_system_region;
 }
 
 SYSV_WRAPPER(AppPlatform_linux$getGraphicsVendor, 2)
 void AppPlatform_linux$getGraphicsVendor(android_string_t *ret, AppPlatform_linux *app_platform) {
-    //puts("debug: AppPlatform_linux::getGraphicsVendor");
-    android_string_cstr(ret, (char *)glGetString(GL_VENDOR));
+    const char *s = (const char *)glGetString(GL_VENDOR);
+    android_string_cstr(ret, s ? (char *)s : "");
 }
 
 SYSV_WRAPPER(AppPlatform_linux$getGraphicsRenderer, 2)
 void AppPlatform_linux$getGraphicsRenderer(android_string_t *ret, AppPlatform_linux *app_platform) {
-    //puts("debug: AppPlatform_linux::getGraphicsRenderer");
-    android_string_cstr(ret, (char *)glGetString(GL_RENDERER));
+    const char *s = (const char *)glGetString(GL_RENDERER);
+    android_string_cstr(ret, s ? (char *)s : "");
 }
 
 SYSV_WRAPPER(AppPlatform_linux$getGraphicsVersion, 2)
 void AppPlatform_linux$getGraphicsVersion(android_string_t *ret, AppPlatform_linux *app_platform) {
-    //puts("debug: AppPlatform_linux::getGraphicsVersion");
-    android_string_cstr(ret, (char *)glGetString(GL_VERSION));
+    const char *s = (const char *)glGetString(GL_VERSION);
+    android_string_cstr(ret, s ? (char *)s : "");
 }
 
 SYSV_WRAPPER(AppPlatform_linux$getGraphicsExtensions, 2)
 void AppPlatform_linux$getGraphicsExtensions(android_string_t *ret, AppPlatform_linux *app_platform) {
-    //puts("debug: AppPlatform_linux::getGraphicsExtensions");
-    android_string_cstr(ret, (char *)glGetString(GL_EXTENSIONS));
+    const char *s = (const char *)glGetString(GL_EXTENSIONS);
+    android_string_cstr(ret, s ? (char *)s : "");
 }
 
 android_string_t *AppPlatform_linux$getExternalStoragePath(AppPlatform_linux *app_platform) {
-    //puts("debug: AppPlatform_linux::getExternalStoragePath");
-    android_string_t *str = (android_string_t *)malloc(sizeof(android_string_t));
-    char *storage_path = (char *)malloc(1024);
-    storage_path[0] = '\0';
-    strcat(storage_path, game_parameters.home_path);
-    strcat(storage_path, "/storage/");
-    android_string_cstr(str, storage_path);
-    free(storage_path);
-    return str;
+    init_platform_strings();
+    return &s_storage_path;
 }
 
 android_string_t *AppPlatform_linux$getInternalStoragePath(AppPlatform_linux *app_platform) {
-    //puts("debug: AppPlatform_linux::getInternalStoragePath");
-    android_string_t *str = (android_string_t *)malloc(sizeof(android_string_t));
-    char *storage_path = (char *)malloc(1024);
-    storage_path[0] = '\0';
-    strcat(storage_path, game_parameters.home_path);
-    strcat(storage_path, "/storage/");
-    android_string_cstr(str, storage_path);
-    free(storage_path);
-    return str;
+    init_platform_strings();
+    return &s_storage_path;
+}
+
+android_string_t *AppPlatform_linux$getUserdataPath(AppPlatform_linux *app_platform) {
+    init_platform_strings();
+    return &s_storage_path;
+}
+
+android_string_t *AppPlatform_linux$getUserdataPathForLevels(AppPlatform_linux *app_platform) {
+    init_platform_strings();
+    return &s_storage_path;
+}
+
+android_string_t *AppPlatform_linux$getPlatformTempPath(AppPlatform_linux *app_platform) {
+    init_platform_strings();
+    return &s_storage_path;
 }
 
 SYSV_WRAPPER(AppPlatform_linux$getApplicationId, 2)
@@ -1295,4 +1512,9 @@ void AppPlatform_linux$pickImage(AppPlatform_linux *__this, image_picking_callba
     } else {
         callback->vtable->onImagePickingCanceled(callback);
     }
+}
+
+SYSV_WRAPPER(AppPlatform_linux$getPackagePath, 3)
+void AppPlatform_linux$getPackagePath(android_string_t *ret, AppPlatform_linux *app_platform, android_string_t *package_name) {
+    android_string_cstr(ret, "");
 }

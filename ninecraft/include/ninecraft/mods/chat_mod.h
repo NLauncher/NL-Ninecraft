@@ -5,4 +5,6 @@ extern void chat_mod_inject(void *handle);
 
 extern void chat_mod_append_char(char c);
 
+extern void chat_screen_key_pressed(void *__this, int code);
+
 #endif

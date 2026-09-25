@@ -1,10 +1,21 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 #include <stdarg.h>
+#include <time.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <unistd.h>
+#include <utime.h>
+#include <sys/epoll.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <net/if.h>
+#include <netdb.h>
+#include <pthread.h>
 #ifndef _WIN32
 #include <sys/mman.h>
 #else
@@ -36,11 +47,13 @@
 #include <ninecraft/audio/audio_engine.h>
 #include <zlib.h>
 #include <ancmp/android_stat.h>
+#include <ancmp/android_pthread_attr.h>
 
 #include <ancmp/hooks.h>
 #include <ancmp/android_dlfcn.h>
 #include <ancmp/linker.h>
 #include <ancmp/abi_fix.h>
+#include <anjni/anjni.h>
 
 #include <ninecraft/options.h>
 #include <ninecraft/mods/chat_mod.h>
@@ -68,7 +81,7 @@ static float *controller_y_stick;
 
 bool mouse_pointer_hidden = false;
 
-void *load_library(const char *name) {
+void *load_library(const char *name, bool show_error) {
 #if defined(__i386__) || defined(_M_IX86)
     char *arch = "x86";
 #else
@@ -88,7 +101,10 @@ void *load_library(const char *name) {
 
     void *handle = android_dlopen(fullpath, ANDROID_RTLD_LAZY);
     if (handle == NULL) {
-        printf("failed to load library %s: %s\n", fullpath, android_dlerror());
+        const char *e = android_dlerror();
+        if (show_error) {
+            printf("failed to load library %s: %s\n", fullpath, e);
+        }
         return NULL;
     }
     printf("lib: %s: : %p\n", fullpath, handle);
@@ -135,10 +151,18 @@ int mouseToGameKeyCode(int keyCode) {
 }
 
 static void mouse_click_callback(struct SDL_Window *window, int button, int action, int x, int y) {
-    if (!mouse_pointer_hidden) {
-        int mc_button = (button == SDL_BUTTON_LEFT ? 1 : (button == SDL_BUTTON_RIGHT ? 2 : 0));
+    int mc_button = (button == SDL_BUTTON_LEFT ? 1 : (button == SDL_BUTTON_RIGHT ? 2 : 0));
+    if (!mc_button) {
+        return;
+    }
+    if (version_id >= version_id_0_12_1) {
+        void (*mouse_feed)(char, char, short, short, short, short) = (void (*)(char, char, short, short, short, short))android_dlsym(handle, "_ZN5Mouse4feedEccssss");
+        if (mouse_feed) {
+            mouse_feed((char)mc_button, (char)(action == SDL_PRESSED ? 1 : 0), (short)x, (short)y, 0, 0);
+        }
+    } else if (!mouse_pointer_hidden) {
         if (version_id == version_id_0_1_0) {
-            ((void (*)(int, int, int, int))android_dlsym(handle, "_ZN5Mouse4feedEiiii"))((int)mc_button, (int)(action == SDL_PRESSED ? 1 : 0), (int)x, (int)y0);
+            ((void (*)(int, int, int, int))android_dlsym(handle, "_ZN5Mouse4feedEiiii"))((int)mc_button, (int)(action == SDL_PRESSED ? 0 : 1), (int)x, (int)y);
         } else if (version_id >= version_id_0_6_0) {
             mouse_device_feed_0_6(android_dlsym(handle, "_ZN5Mouse9_instanceE"), (char)mc_button, (char)(action == SDL_PRESSED ? 1 : 0), (short)x, (short)y, 0, 0);
             multitouch_feed_0_6((char)mc_button, (char)(action == SDL_PRESSED ? 1 : 0), (short)x, (short)y, 0);
@@ -160,21 +184,119 @@ static void mouse_click_callback(struct SDL_Window *window, int button, int acti
     }
 }
 
+static int last_mouse_x = 0;
+static int last_mouse_y = 0;
+
+static void *get_current_screen(void) {
+    if (!ninecraft_app || !handle) {
+        return NULL;
+    }
+    if (version_id >= version_id_0_12_1) {
+        void *(*get_screen)(void *) = (void *(*)(void *))android_dlsym(handle, "_ZN15MinecraftClient9getScreenEv");
+        if (get_screen) {
+            return get_screen(ninecraft_app);
+        }
+    } else {
+        size_t screen_offset = 0;
+        if (version_id == version_id_0_11_1) {
+            screen_offset = MINECRAFTCLIENT_SCREEN_OFFSET_0_11_1;
+        } else if (version_id == version_id_0_11_0) {
+            screen_offset = MINECRAFTCLIENT_SCREEN_OFFSET_0_11_0;
+        } else if (version_id == version_id_0_10_5) {
+            screen_offset = MINECRAFTCLIENT_SCREEN_OFFSET_0_10_5;
+        } else if (version_id == version_id_0_10_4) {
+            screen_offset = MINECRAFTCLIENT_SCREEN_OFFSET_0_10_4;
+        } else if (version_id == version_id_0_10_3) {
+            screen_offset = MINECRAFTCLIENT_SCREEN_OFFSET_0_10_3;
+        } else if (version_id == version_id_0_10_2) {
+            screen_offset = MINECRAFTCLIENT_SCREEN_OFFSET_0_10_2;
+        } else if (version_id == version_id_0_10_1) {
+            screen_offset = MINECRAFTCLIENT_SCREEN_OFFSET_0_10_1;
+        } else if (version_id == version_id_0_10_0) {
+            screen_offset = MINECRAFTCLIENT_SCREEN_OFFSET_0_10_0;
+        } else if (version_id == version_id_0_9_5) {
+            screen_offset = NINECRAFTAPP_SCREEN_OFFSET_0_9_5;
+        } else if (version_id == version_id_0_9_4) {
+            screen_offset = NINECRAFTAPP_SCREEN_OFFSET_0_9_4;
+        } else if (version_id == version_id_0_9_3) {
+            screen_offset = NINECRAFTAPP_SCREEN_OFFSET_0_9_3;
+        } else if (version_id == version_id_0_9_2) {
+            screen_offset = NINECRAFTAPP_SCREEN_OFFSET_0_9_2;
+        } else if (version_id == version_id_0_9_1) {
+            screen_offset = NINECRAFTAPP_SCREEN_OFFSET_0_9_1;
+        } else if (version_id == version_id_0_9_0) {
+            screen_offset = NINECRAFTAPP_SCREEN_OFFSET_0_9_0;
+        } else if (version_id == version_id_0_8_1) {
+            screen_offset = NINECRAFTAPP_SCREEN_OFFSET_0_8_1;
+        } else if (version_id == version_id_0_8_0) {
+            screen_offset = NINECRAFTAPP_SCREEN_OFFSET_0_8_0;
+        } else if (version_id == version_id_0_7_6) {
+            screen_offset = NINECRAFTAPP_SCREEN_OFFSET_0_7_6;
+        } else if (version_id == version_id_0_7_5) {
+            screen_offset = NINECRAFTAPP_SCREEN_OFFSET_0_7_5;
+        } else if (version_id == version_id_0_7_4) {
+            screen_offset = NINECRAFTAPP_SCREEN_OFFSET_0_7_4;
+        } else if (version_id == version_id_0_7_3) {
+            screen_offset = NINECRAFTAPP_SCREEN_OFFSET_0_7_3;
+        } else if (version_id == version_id_0_7_2) {
+            screen_offset = NINECRAFTAPP_SCREEN_OFFSET_0_7_2;
+        } else if (version_id == version_id_0_7_1) {
+            screen_offset = NINECRAFTAPP_SCREEN_OFFSET_0_7_1;
+        } else if (version_id == version_id_0_7_0) {
+            screen_offset = NINECRAFTAPP_SCREEN_OFFSET_0_7_0;
+        } else if (version_id <= version_id_0_6_1 && version_id >= version_id_0_5_0) {
+            screen_offset = 0x2e0;
+        }
+        if (screen_offset) {
+            return *(void **)((char *)ninecraft_app + screen_offset);
+        }
+    }
+    return NULL;
+}
+
 static void mouse_scroll_callback(struct SDL_Window *window, float xoffset, float yoffset, int direction) {
     char key_code = 0;
     float offset = (direction == SDL_MOUSEWHEEL_NORMAL) ? yoffset : xoffset;
-
-    if (offset > 0) {
-        key_code = MCKEY_MENU_PREVIOUS;
-    } else if (offset < 0) {
-        key_code = MCKEY_MENU_NEXT;
+    if (version_id < version_id_0_12_1) {
+        void *screen = get_current_screen();
+        if (screen && !mouse_pointer_hidden) {
+            void (*screen_handle_direction)(void *, int, float, float) = (void (*)(void *, int, float, float))android_dlsym(handle, "_ZN6Screen15handleDirectionE11DirectionIdff");
+            if (screen_handle_direction) {
+                screen_handle_direction(screen, 2, 0.0f, offset * 30.0f);
+            }
+        }
     }
-    keyboard_feed(key_code, 1);
-    keyboard_feed(key_code, 0);
+    if (version_id >= version_id_0_12_1) {
+        void (*mouse_feed)(char, char, short, short, short, short) = (void (*)(char, char, short, short, short, short))android_dlsym(handle, "_ZN5Mouse4feedEccssss");
+        if (mouse_feed) {
+            char dir = (char)(offset > 0 ? 1 : -1);
+            mouse_feed(4, dir, (short)last_mouse_x, (short)last_mouse_y, 0, (short)(offset * 120));
+            mouse_feed(3, (char)(offset > 0 ? 127 : -128), (short)last_mouse_x, (short)last_mouse_y, 0, 0);
+        }
+    } else {
+        if (offset > 0) {
+            key_code = MCKEY_MENU_PREVIOUS;
+        } else if (offset < 0) {
+            key_code = MCKEY_MENU_NEXT;
+        }
+        keyboard_feed(key_code, 1);
+        keyboard_feed(key_code, 0);
+    }
 }
 
 static void mouse_pos_callback(struct SDL_Window *window, int xpos, int ypos, int xrel, int yrel) {
-    if (!mouse_pointer_hidden || version_id >= version_id_0_6_0) {
+    last_mouse_x = xpos;
+    last_mouse_y = ypos;
+    if (version_id >= version_id_0_12_1) {
+        void (*mouse_feed)(char, char, short, short, short, short) = (void (*)(char, char, short, short, short, short))android_dlsym(handle, "_ZN5Mouse4feedEccssss");
+        if (mouse_feed) {
+            if (mouse_pointer_hidden) {
+                mouse_feed(0, 0, (short)xpos, (short)ypos, (short)xrel, (short)yrel);
+            } else {
+                mouse_feed(0, 0, (short)xpos, (short)ypos, 0, 0);
+            }
+        }
+    } else if (!mouse_pointer_hidden || version_id >= version_id_0_6_0) {
         if (version_id == version_id_0_1_0) {
             ((void (*)(int, int, int, int))android_dlsym(handle, "_ZN5Mouse4feedEiiii"))(0, 0, (int)xpos, (int)ypos);
         } else if (version_id >= version_id_0_6_0) {
@@ -633,10 +755,22 @@ float calculate_scale(int width, int height, float dpi) {
 }
 
 static void set_ninecraft_size(int width, int height) {
-    if (version_id >= version_id_0_10_0) {
-        minecraft_client_set_size(ninecraft_app, width, height, 2.f);
+    float ddpi = 96.0f;
+    SDL_GetDisplayDPI(SDL_GetWindowDisplayIndex(_window), &ddpi, NULL, NULL);
+    float scale = calculate_scale(width, height, ddpi);
+    if (minecraft_client_set_ui_size_and_scale) {
+        minecraft_client_set_ui_size_and_scale(ninecraft_app, width, height, scale);
+        if (minecraft_client_set_rendering_size) {
+            minecraft_client_set_rendering_size(ninecraft_app, width, height);
+        }
+    } else if (version_id >= version_id_0_10_0) {
+        if (minecraft_client_set_size) {
+            minecraft_client_set_size(ninecraft_app, width, height, scale);
+        }
     } else {
-        minecraft_set_size(ninecraft_app, width, height);
+        if (minecraft_set_size) {
+            minecraft_set_size(ninecraft_app, width, height);
+        }
     }
     size_t screen_offset;
     if (version_id == version_id_0_11_1) {
@@ -688,9 +822,7 @@ static void set_ninecraft_size(int width, int height) {
     } else {
         return;
     }
-    float ddpi = 96.0f;
-    SDL_GetDisplayDPI(SDL_GetWindowDisplayIndex(_window), &ddpi, NULL, NULL);
-    float scale = calculate_scale(width, height, ddpi);
+
     *(float *)android_dlsym(handle, "_ZN3Gui11InvGuiScaleE") = 1.0f / scale;
     *(float *)android_dlsym(handle, "_ZN3Gui8GuiScaleE") = scale;
     void *screen = *(void **)((char *)ninecraft_app + screen_offset);
@@ -730,7 +862,7 @@ static void char_callback(struct SDL_Window *window, char *codepoint) {
         chat_just_opened = false;
         return;
     }
-    if (is_keyboard_visible) {
+    if (is_keyboard_visible || version_id >= version_id_0_12_1) {
         if (version_id >= version_id_0_6_0 && version_id <= version_id_0_7_1) {
             uint8_t c = (uint8_t)codepoint[0];
             if (c >= 0x80) {
@@ -841,6 +973,100 @@ void *chat_screen_create() {
     return chat_screen;
 }
 
+int getGameKeyCode2(int keycode) {
+    if (keycode == SDLK_1) {
+        return 49;
+    }
+    if (keycode == SDLK_2) {
+        return 50;
+    }
+    if (keycode == SDLK_3) {
+        return 51;
+    }
+    if (keycode == SDLK_4) {
+        return 52;
+    }
+    if (keycode == SDLK_5) {
+        return 53;
+    }
+    if (keycode == SDLK_6) {
+        return 54;
+    }
+    if (keycode == SDLK_7) {
+        return 55;
+    }
+    if (keycode == SDLK_8) {
+        return 56;
+    }
+    if (keycode == SDLK_9) {
+        return 57;
+    }
+    if (keycode == SDLK_0) {
+        return 58;
+    }
+    if (keycode == SDLK_UP) {
+        return 38;
+    }
+    if (keycode == SDLK_DOWN) {
+        return 40;
+    }
+    if (keycode == SDLK_LEFT) {
+        return 37;
+    }
+    if (keycode == SDLK_RIGHT) {
+        return 39;
+    }
+    if (keycode == SDLK_BACKSPACE) {
+        return 8;
+    }
+    if (keycode == SDLK_RETURN) {
+        return 65293;
+    }
+    if (keycode == SDLK_SPACE) {
+        return 32;
+    }
+    if (keycode == SDLK_e) {
+        return 69;
+    }
+    if (keycode == SDLK_ESCAPE) {
+        return 27;
+    }
+    if (keycode == SDLK_LCTRL) {
+        return 17;
+    }
+    if (keycode == SDLK_LSHIFT) {
+        return 16;
+    }
+    if (keycode == SDLK_t) {
+        return 84;
+    }
+    if (keycode == SDLK_SLASH) {
+        return 191;
+    }
+    if (keycode == SDLK_F5) {
+        return 116;
+    }
+    if (keycode == SDLK_F1) {
+        return 112;
+    }
+    if (keycode == SDLK_q) {
+        return 81;
+    }
+    if (keycode == SDLK_w) {
+        return 87;
+    }
+    if (keycode == SDLK_a) {
+        return 65;
+    }
+    if (keycode == SDLK_s) {
+        return 83;
+    }
+    if (keycode == SDLK_d) {
+        return 68;
+    }
+    return 0;
+}
+
 static void key_callback(struct SDL_Window *window, int key, int scancode, int action, int mod) {
     int android_key = sdl_to_android_key(key);
     if (action == SDL_KEYDOWN) {
@@ -858,12 +1084,50 @@ static void key_callback(struct SDL_Window *window, int key, int scancode, int a
                 SDL_SetWindowFullscreen(_window, SDL_WINDOW_FULLSCREEN_DESKTOP);
             }
         }
+    } else if (version_id >= version_id_0_12_1) {
+        int game_key = getGameKeyCode2(key);
+        if (key == SDLK_BACKSPACE && action == SDL_KEYDOWN) {
+            android_string_t str;
+            android_string_cstr(&str, "\x08");
+            keyboard_feed_text_0_7_2(&str, false);
+        } else if ((key == SDLK_RETURN || key == SDLK_KP_ENTER) && action == SDL_KEYDOWN) {
+            android_string_t str;
+            android_string_cstr(&str, "\n");
+            keyboard_feed_text_0_7_2(&str, false);
+        } else if (key >= SDLK_1 && key <= SDLK_9 && action == SDL_KEYDOWN && mouse_pointer_hidden) {
+            void (*handleSlotSelectButtonPress)(void *, int) = (void (*)(void *, int))android_dlsym(handle, "_ZN15MinecraftClient27handleSlotSelectButtonPressEi");
+            if (handleSlotSelectButtonPress) {
+                handleSlotSelectButtonPress(ninecraft_app, (key - SDLK_1) + 1);
+            }
+        } else if (game_key) {
+            if (action == SDL_KEYDOWN) {
+                keyboard_feed(game_key, 1);
+            } else if (action == SDL_KEYUP) {
+                keyboard_feed(game_key, 0);
+            }
+        }
     } else {
         if (key == SDLK_LCTRL) {
             if (action == SDL_KEYDOWN) {
                 ctrl_pressed = true;
             } else if (action == SDL_KEYUP) {
                 ctrl_pressed = false;
+            }
+        }
+        if ((key == SDLK_RETURN || key == SDLK_KP_ENTER) && action == SDL_KEYDOWN) {
+            void *screen = get_current_screen();
+            void (*send_chat_16)(void *) = (void (*)(void *))android_dlsym(handle, "_ZN10ChatScreen16_sendChatMessageEv");
+            void (*send_chat_15)(void *) = (void (*)(void *))android_dlsym(handle, "_ZN10ChatScreen15sendChatMessageEv");
+            if (screen && send_chat_16) {
+                send_chat_16(screen);
+            } else if (screen && send_chat_15) {
+                send_chat_15(screen);
+            } else if (version_id >= version_id_0_5_0 && version_id <= version_id_0_6_1) {
+                chat_screen_key_pressed(NULL, MCKEY_SIGN_ENTER);
+            } else if (version_id >= version_id_0_7_0 && version_id <= version_id_0_11_1) {
+                android_string_t str;
+                android_string_cstr(&str, "\n");
+                keyboard_feed_text_0_7_2(&str, false);
             }
         }
         int game_keycode = getGameKeyCode(key);
@@ -1001,10 +1265,19 @@ static void key_callback(struct SDL_Window *window, int key, int scancode, int a
                     controller_states[0] = 0;
                 }
             }
-        } else if (mouse_pointer_hidden && key == SDLK_t) {
+        } else if (mouse_pointer_hidden && (key == SDLK_t || key == SDLK_SLASH)) {
             if (action == SDL_KEYDOWN) {
                 chat_just_opened = true;
-                if (version_id >= version_id_0_7_0 && version_id <= version_id_0_11_1) {
+                if (version_id >= version_id_0_12_1) {
+                    void *(*get_chooser)(void *) = (void *(*)(void *))android_dlsym(handle, "_ZNK15MinecraftClient16getScreenChooserEv");
+                    void (*push_chat)(void *) = (void (*)(void *))android_dlsym(handle, "_ZN13ScreenChooser14pushChatScreenEv");
+                    if (get_chooser && push_chat) {
+                        void *chooser = get_chooser(ninecraft_app);
+                        if (chooser) {
+                            push_chat(chooser);
+                        }
+                    }
+                } else if (version_id >= version_id_0_7_0 && version_id <= version_id_0_11_1) {
                     size_t minecraft_screenchooser_offset;
                     if (version_id == version_id_0_7_0) {
                         minecraft_screenchooser_offset = MINECRAFT_SCREENCHOOSER_OFFSET_0_7_0;
@@ -1071,9 +1344,15 @@ static void key_callback(struct SDL_Window *window, int key, int scancode, int a
                     }
                 }
             }
-        } else if (key >= SDLK_1 && key <= SDLK_9 && action == SDL_KEYDOWN && mouse_pointer_hidden && version_id >= version_id_0_5_0 && version_id <= version_id_0_11_1) {
+        } else if (key >= SDLK_1 && key <= SDLK_9 && action == SDL_KEYDOWN && mouse_pointer_hidden) {
             int target_slot = key - SDLK_1;
-            size_t player_offset = 0, inventory_offset = 0;
+            if (version_id >= version_id_0_12_1) {
+                void (*handle_slot_select)(void *, int) = (void (*)(void *, int))android_dlsym(handle, "_ZN15MinecraftClient27handleSlotSelectButtonPressEi");
+                if (handle_slot_select) {
+                    handle_slot_select(ninecraft_app, target_slot + 1);
+                }
+            } else if (version_id >= version_id_0_5_0 && version_id <= version_id_0_11_1) {
+                size_t player_offset = 0, inventory_offset = 0;
             if (version_id == version_id_0_5_0) {
                 player_offset = MINECRAFT_LOCAL_PLAYER_OFFSET_0_5_0;
                 inventory_offset = PLAYER_INVENTORY_OFFSET_0_5_0;
@@ -1163,7 +1442,8 @@ static void key_callback(struct SDL_Window *window, int key, int scancode, int a
                     }
                 }
             }
-        } else if (version_id >= version_id_0_1_1 && key == SDLK_ESCAPE) {
+        }
+    } else if (version_id >= version_id_0_1_1 && key == SDLK_ESCAPE) {
             if (action == SDL_KEYDOWN) {
                 if (version_id >= version_id_0_10_0) {
 #ifdef _WIN32
@@ -1298,6 +1578,46 @@ void gles_hook() {
     add_custom_hook("glDeleteShader", (void *)gl_delete_shader);
     add_custom_hook("glUniform1i", (void *)gl_uniform_1_i);
     add_custom_hook("glBufferSubData", (void *)gl_buffer_sub_data);
+    add_custom_hook("glBlendFuncSeparate", (void *)glBlendFuncSeparate);
+    add_custom_hook("glBindRenderbuffer", (void *)glBindRenderbuffer);
+    add_custom_hook("glDeleteRenderbuffers", (void *)glDeleteRenderbuffers);
+    add_custom_hook("glFramebufferRenderbuffer", (void *)glFramebufferRenderbuffer);
+    add_custom_hook("glFramebufferTexture2D", (void *)glFramebufferTexture2D);
+    add_custom_hook("glGenRenderbuffers", (void *)glGenRenderbuffers);
+    add_custom_hook("glRenderbufferStorage", (void *)glRenderbufferStorage);
+    add_custom_hook("glBindFramebuffer", (void *)glBindFramebuffer);
+    add_custom_hook("glCheckFramebufferStatus", (void *)glCheckFramebufferStatus);
+    add_custom_hook("glClearDepthf", (void *)glClearDepthf);
+    add_custom_hook("glDeleteFramebuffers", (void *)glDeleteFramebuffers);
+    add_custom_hook("glGenFramebuffers", (void *)glGenFramebuffers);
+    add_custom_hook("glGetIntegerv", (void *)glGetIntegerv);
+    add_custom_hook("glFlush", (void *)glFlush);
+    add_custom_hook("glGetTexParameteriv", (void *)glGetTexParameteriv);
+    add_custom_hook("glIsTexture", (void *)glIsTexture);
+}
+
+typedef struct __pthread_cleanup_t {
+    struct __pthread_cleanup_t* __cleanup_prev;
+    void (*__cleanup_routine)(void *);
+    void *__cleanup_arg;
+} __pthread_cleanup_t;
+
+static __thread __pthread_cleanup_t* __cleanup_stack = NULL;
+
+void __my_pthread_cleanup_push(__pthread_cleanup_t* c, void (*routine)(void *), void *arg) {
+    c->__cleanup_routine = routine;
+    c->__cleanup_arg = arg;
+    c->__cleanup_prev = __cleanup_stack;
+    __cleanup_stack = c;
+}
+
+void __my_pthread_cleanup_pop(__pthread_cleanup_t* c, int execute) {
+    if (__cleanup_stack == c) {
+        __cleanup_stack = c->__cleanup_prev;
+    }
+    if (execute && c->__cleanup_routine) {
+        c->__cleanup_routine(c->__cleanup_arg);
+    }
 }
 
 int __my_srget(FILE *astream) {
@@ -1317,8 +1637,42 @@ void missing_hook() {
     add_custom_hook("uncompress", uncompress);
     add_custom_hook("compress", compress);
     add_custom_hook("compressBound", compressBound);
+    add_custom_hook("crc32", (void *)crc32);
 
     add_custom_hook("__srget", __my_srget);
+    add_custom_hook("__pthread_cleanup_push", (void *)__my_pthread_cleanup_push);
+    add_custom_hook("__pthread_cleanup_pop", (void *)__my_pthread_cleanup_pop);
+    add_custom_hook("fseeko", (void *)fseeko);
+    add_custom_hook("ftello", (void *)ftello);
+    add_custom_hook("fmaxf", (void *)fmaxf);
+    add_custom_hook("roundf", (void *)roundf);
+    add_custom_hook("truncf", (void *)truncf);
+    add_custom_hook("nearbyintf", (void *)nearbyintf);
+    add_custom_hook("difftime", (void *)difftime);
+    add_custom_hook("ctime", (void *)ctime);
+    add_custom_hook("chmod", (void *)chmod);
+    add_custom_hook("fgetc", (void *)fgetc);
+    add_custom_hook("utime", (void *)utime);
+    add_custom_hook("vfprintf", (void *)vfprintf);
+    add_custom_hook("getuid", (void *)getuid);
+    add_custom_hook("sleep", (void *)sleep);
+    add_custom_hook("inet_pton", (void *)inet_pton);
+    add_custom_hook("gmtime_r", (void *)gmtime_r);
+    add_custom_hook("setenv", (void *)setenv);
+    add_custom_hook("strptime", (void *)strptime);
+    add_custom_hook("unsetenv", (void *)unsetenv);
+    add_custom_hook("epoll_create", (void *)epoll_create);
+    add_custom_hook("epoll_ctl", (void *)epoll_ctl);
+    add_custom_hook("epoll_wait", (void *)epoll_wait);
+    add_custom_hook("if_nametoindex", (void *)if_nametoindex);
+    add_custom_hook("recvmsg", (void *)recvmsg);
+    add_custom_hook("sendmsg", (void *)sendmsg);
+    add_custom_hook("getpeername", (void *)getpeername);
+    add_custom_hook("if_indextoname", (void *)if_indextoname);
+    add_custom_hook("gai_strerror", (void *)gai_strerror);
+    add_custom_hook("getnameinfo", (void *)getnameinfo);
+    add_custom_hook("pthread_attr_getdetachstate", (void *)android_pthread_attr_getdetachstate);
+    add_custom_hook("clock", (void *)clock);
 }
 
 unsigned char mcpi_api_initialized = 0;
@@ -1499,6 +1853,68 @@ static bool detect_version() {
             version_id = version_id_0_11_0;
         } else if (strcmp(verstr, "v0.11.1 alpha") == 0) {
             version_id = version_id_0_11_1;
+        } else if (strcmp(verstr, "v0.12.1 alpha") == 0) {
+            version_id = version_id_0_12_1;
+        } else if (strcmp(verstr, "v0.12.2 alpha") == 0) {
+            version_id = version_id_0_12_2;
+        } else if (strcmp(verstr, "v0.12.3 alpha") == 0) {
+            version_id = version_id_0_12_3;
+        } else if (strcmp(verstr, "v0.13.1 alpha") == 0) {
+            version_id = version_id_0_13_2_2;
+        } else if (strcmp(verstr, "v0.13.2 alpha") == 0) {
+            android_Dl_info info;
+            android_dladdr(android_dlsym(handle, "_ZN6Common20getGameVersionStringEv"), &info);
+            uintptr_t rel_offset = (uintptr_t)info.dli_saddr - (uintptr_t)info.dli_fbase;
+            if (rel_offset == 0x2d3090) {
+                version_id = version_id_0_13_2_3;
+            } else {
+                version_id = version_id_0_13_2_1;
+            }
+        } else if (strcmp(verstr, "v0.14.3 alpha") == 0) {
+            android_Dl_info info;
+            android_dladdr(android_dlsym(handle, "_ZN6Common20getGameVersionStringEv"), &info);
+            uintptr_t rel_offset = (uintptr_t)info.dli_saddr - (uintptr_t)info.dli_fbase;
+            if (rel_offset == 0x2fc270) {
+                version_id = version_id_0_14_3_2;
+            } else {
+                version_id = version_id_0_14_3_1;
+            }
+        } else if (strcmp(verstr, "v0.15.0 alpha") == 0) {
+            version_id = version_id_0_15_0_1;
+        } else if (strcmp(verstr, "v0.15.1 alpha") == 0) {
+            version_id = version_id_0_15_1_2;
+        } else if (strcmp(verstr, "v0.15.3 alpha") == 0) {
+            version_id = version_id_0_15_3_2;
+        } else if (strcmp(verstr, "v0.15.4 alpha") == 0) {
+            version_id = version_id_0_15_4;
+        } else if (strcmp(verstr, "v0.15.6 alpha") == 0) {
+            version_id = version_id_0_15_6;
+        } else if (strcmp(verstr, "v0.15.7 alpha") == 0) {
+            version_id = version_id_0_15_7_2;
+        } else if (strcmp(verstr, "v0.15.8 alpha") == 0) {
+            version_id = version_id_0_15_8;
+        } else if (strcmp(verstr, "v0.15.90 alpha build 1") == 0) {
+            android_Dl_info info;
+            android_dladdr(android_dlsym(handle, "_ZN6Common20getGameVersionStringEv"), &info);
+            uintptr_t rel_offset = (uintptr_t)info.dli_saddr - (uintptr_t)info.dli_fbase;
+            if (rel_offset == 0x00e25f60) {
+                version_id = version_id_0_15_90_0;
+            } else if (rel_offset == 0x00f014c0) {
+                version_id = version_id_0_15_90_7;
+            } else if (rel_offset == 0x00e25170) {
+                android_Dl_info info_aes;
+                android_dladdr(android_dlsym(handle, "AES_version"), &info_aes);
+                uintptr_t aes_offset = (uintptr_t)info_aes.dli_saddr - (uintptr_t)info_aes.dli_fbase;
+                if (aes_offset == 0x01cec4a0) {
+                    version_id = version_id_0_15_90_1;
+                } else {
+                    version_id = version_id_0_15_90_2;
+                }
+            }
+        } else if (strcmp(verstr, "v0.15.90.1 alpha build 1") == 0) {
+            version_id = version_id_0_15_90_8;
+        } else if (strcmp(verstr, "v0.16.0 alpha") == 0) {
+            version_id = version_id_0_16_0_5;
         } else {
             puts("Unsupported Version!");
             found = false;
@@ -1563,9 +1979,178 @@ static bool detect_version() {
     return found;
 }
 
+int AppPlatform_android$getKeyboardHeight(void *__this) {
+    return 0;
+}
+
+static detour_backup_t model_part_load_detour;
+static void hook_model_part_load(void *this, void *geom, void *node_name, void *parent) {
+    if (!geom || !*(void **)((char *)geom + 4)) {
+        return;
+    }
+    detour_disarm(model_part_load_detour);
+    void (*real_fn)(void *, void *, void *, void *) = (void (*)(void *, void *, void *, void *))model_part_load_detour.addr;
+    real_fn(this, geom, node_name, parent);
+    detour_rearm(model_part_load_detour);
+}
+
+static detour_backup_t geometry_get_node_detour;
+static void *hook_geometry_get_node(void *this, void *str) {
+    if (!this) {
+        return NULL;
+    }
+    detour_disarm(geometry_get_node_detour);
+    void *(*real_fn)(void *, void *) = (void *(*)(void *, void *))geometry_get_node_detour.addr;
+    void *ret = real_fn(this, str);
+    detour_rearm(geometry_get_node_detour);
+    return ret;
+}
+
+jvalue org_fmod_fmod_checkinit(jobject obj, va_list ap) {
+    jvalue ret;
+    ret.z = JNI_TRUE;
+    puts("org/fmod/FMOD::checkInit()");
+    return ret;
+}
+
+jvalue org_fmod_audiodevice_audiodevice(jobject obj, va_list ap) {
+    jvalue ret;
+    puts("org/fmod/AudioDevice::AudioDevice()");
+    memset(&ret, 0, sizeof(jvalue));
+    return ret;
+}
+
+int fmod_channels, fmod_sample_rate, fmod_frames_count, fmod_frame_size;
+
+jvalue org_fmod_audiodevice_init(jobject obj, va_list ap) {
+    jvalue ret;
+    ret.z = JNI_TRUE;
+    jint channels = va_arg(ap, jint);
+    jint sample_rate = va_arg(ap, jint);
+    jint frames_count = va_arg(ap, jint);
+    jint frame_size = va_arg(ap, jint);
+    fmod_channels = channels;
+    fmod_sample_rate = sample_rate;
+    fmod_frames_count = frames_count;
+    fmod_frame_size = frame_size;
+    printf("org/fmod/AudioDevice::init(%d, %d, %d, %d)\n", channels, sample_rate, frame_size, frames_count);
+    return ret;
+}
+
+jvalue org_fmod_audiodevice_write(jobject obj, va_list ap) {
+    jvalue ret;
+    jbyteArray buffer = va_arg(ap, jbyteArray);
+    jint buffer_size = va_arg(ap, jint);
+    audio_engine_write(buffer, buffer_size, fmod_channels, 16, fmod_sample_rate, 1, 2, 1.0, 1.0);
+    memset(&ret, 0, sizeof(jvalue));
+    return ret;
+}
+
+jvalue org_fmod_audiodevice_close(jobject obj, va_list ap) {
+    jvalue ret;
+    puts("org/fmod/AudioDevice::close()");
+    memset(&ret, 0, sizeof(jvalue));
+    return ret;
+}
+
+void fmod_anjni() {
+    anjni_class_t *org_fmod_audiodevice, *org_fmod_mediacodec, *org_fmod_fmod;
+    anjni_create_class("org/fmod/AudioDevice", NULL, &org_fmod_audiodevice);
+    anjni_create_class("org/fmod/MediaCodec", NULL, &org_fmod_mediacodec);
+    anjni_create_class("org/fmod/FMOD", NULL, &org_fmod_fmod);
+
+    printf("org/fmod/AudioDevice: %p\n", org_fmod_audiodevice);
+    printf("org/fmod/MediaCodec: %p\n", org_fmod_mediacodec);
+    printf("org/fmod/FMOD: %p\n", org_fmod_fmod);
+    
+    anjni_add_method(org_fmod_fmod, ANJNI_METHOD_TYPE_BOOLEAN, "checkInit", "()Z", 1, 1, org_fmod_fmod_checkinit);
+    anjni_add_method(org_fmod_audiodevice, ANJNI_METHOD_TYPE_VOID, "<init>", "()V", 0, 0, org_fmod_audiodevice_audiodevice);
+    anjni_add_method(org_fmod_audiodevice, ANJNI_METHOD_TYPE_BOOLEAN, "init", "(IIII)Z", 0, 0, org_fmod_audiodevice_init);
+    anjni_add_method(org_fmod_audiodevice, ANJNI_METHOD_TYPE_VOID, "write", "([BI)V", 0, 0, org_fmod_audiodevice_write);
+    anjni_add_method(org_fmod_audiodevice, ANJNI_METHOD_TYPE_VOID, "close", "()V", 0, 0, org_fmod_audiodevice_close);
+}
+
+SYSV_WRAPPER(xbox_read_config_file, 2);
+static void xbox_read_config_file(android_string_t *ret, void *java_interop) {
+    android_string_cstr(ret, "{}");
+}
+
+SYSV_WRAPPER(xbox_get_local_storage_path, 2);
+static void xbox_get_local_storage_path(android_string_t *ret, void *java_interop) {
+    char path[1024];
+    path[0] = '\0';
+    if (game_parameters.home_path) {
+        strncat(path, game_parameters.home_path, 1023);
+        strncat(path, "/storage/", 1023);
+    }
+    android_string_cstr(ret, path);
+}
+
+SYSV_WRAPPER(xbox_init_cll, 3);
+static void xbox_init_cll(void *ret, void *java_interop, void *str) {
+    void *(*error_cat)() = (void *(*)())android_dlsym(handle, "_ZN4xbox8services33xbox_services_error_code_categoryEv");
+    *(int *)((char *)ret + 0) = 0;
+    *(void **)((char *)ret + 4) = error_cat ? error_cat() : NULL;
+    android_string_cstr((android_string_t *)((char *)ret + 8), "");
+}
+
+SYSV_WRAPPER(xbox_log_cll, 5);
+static void xbox_log_cll(void *ret, void *java_interop, void *s1, void *s2, void *s3) {
+    void *(*error_cat)() = (void *(*)())android_dlsym(handle, "_ZN4xbox8services33xbox_services_error_code_categoryEv");
+    *(int *)((char *)ret + 0) = 0;
+    *(void **)((char *)ret + 4) = error_cat ? error_cat() : NULL;
+    android_string_cstr((android_string_t *)((char *)ret + 8), "");
+}
+
+static void *xbox_get_java_vm(void *java_interop) {
+    return android_JavaVM;
+}
+
+SYSV_WRAPPER(xbox_init_sign_in_activity, 3);
+static void xbox_init_sign_in_activity(void *ret, void *user_impl, int arg) {
+    void *(*error_cat)() = (void *(*)())android_dlsym(handle, "_ZN4xbox8services33xbox_services_error_code_categoryEv");
+    *(int *)((char *)ret + 0) = 0;
+    *(void **)((char *)ret + 4) = error_cat ? error_cat() : NULL;
+    android_string_cstr((android_string_t *)((char *)ret + 8), "");
+}
+
+typedef struct {
+    void *group;
+    void *geom;
+} geometry_ptr_t;
+
+static void *get_mc_geom_group(void) {
+    if (!ninecraft_app) return NULL;
+    void *(*get_grp)(void *) = (void *(*)(void *))android_dlsym(handle, "_ZNK15MinecraftClient16getGeometryGroupEv");
+    if (get_grp) {
+        return get_grp(ninecraft_app);
+    }
+    return *(void **)((char *)ninecraft_app + 0x15c);
+}
+
+static detour_backup_t geom_group_get_geom_detour;
+static geometry_ptr_t hook_geometry_group_get_geom(void *this, void *name) {
+    detour_disarm(geom_group_get_geom_detour);
+    geometry_ptr_t (*orig)(void *, void *) = (geometry_ptr_t (*)(void *, void *))geom_group_get_geom_detour.addr;
+    geometry_ptr_t res = orig(this, name);
+    if (!res.geom) {
+        void *main_group = get_mc_geom_group();
+        if (main_group && main_group != this) {
+            res = orig(main_group, name);
+        }
+        if (!res.geom && main_group) {
+            android_string_t fallback;
+            android_string_cstr(&fallback, "geometry.humanoid");
+            res = orig(main_group, &fallback);
+        }
+    }
+    detour_rearm(geom_group_get_geom_detour);
+    return res;
+}
+
 int main(int argc, char **argv) {
     struct soinfo *so_liblog, *so_libgles, *so_libgles2, *so_libegl;
-    struct soinfo *so_libandroid, *so_libopensles, *so_libz;
+    struct soinfo *so_libandroid, *so_libopensles, *so_libz, *so_libgnustl_shared, *so_libfmod;
     char *storage_path, *mods_path, *ovc_path, *icon_path, *global_overrides_path;
     static struct stat st = {0};
     int icon_width, icon_height;
@@ -1639,6 +2224,27 @@ int main(int argc, char **argv) {
 
     if (stat(storage_path, &st) == -1) {
         mkdir(storage_path, 0700);
+    }
+
+    char worlds_dir[1024];
+    snprintf(worlds_dir, sizeof(worlds_dir), "%s/minecraftWorlds", storage_path);
+    if (stat(worlds_dir, &st) == -1) {
+        mkdir(worlds_dir, 0700);
+    }
+
+    char mcpe_dir[1024];
+    snprintf(mcpe_dir, sizeof(mcpe_dir), "%sminecraftpe", storage_path);
+    if (stat(mcpe_dir, &st) == -1) {
+        mkdir(mcpe_dir, 0700);
+    }
+    char res_packs_file[1024];
+    snprintf(res_packs_file, sizeof(res_packs_file), "%sminecraftpe/resource_packs.txt", storage_path);
+    if (stat(res_packs_file, &st) == -1 || st.st_size == 0) {
+        FILE *f = fopen(res_packs_file, "w");
+        if (f) {
+            fputs("Minecraft\n", f);
+            fclose(f);
+        }
     }
 
     if (stat(mods_path, &st) == -1) {
@@ -1725,6 +2331,7 @@ int main(int argc, char **argv) {
     add_custom_hook("__android_log_print", (void *)__android_log_print);
     stub_symbols(android_symbols, (void *)android_stub);
     stub_symbols(egl_symbols, (void *)egl_stub);
+    add_custom_hook("eglGetProcAddress", (void *)SDL_GL_GetProcAddress);
 
     add_custom_hook("SL_IID_VOLUME", &sles_iid_volume);
     add_custom_hook("SL_IID_ENGINE", &sles_iid_engine);
@@ -1740,7 +2347,15 @@ int main(int argc, char **argv) {
     so_libopensles = android_library_create("libOpenSLES.so");
     so_libz = android_library_create("libz.so");
 
-    handle = load_library("libminecraftpe.so");
+    so_libgnustl_shared = load_library("libgnustl_shared.so", false);
+    so_libfmod = load_library("libfmod.so", false);
+
+    if (so_libfmod) {
+        fmod_anjni();
+        ((void (*)(JavaVM *, void *))android_dlsym(so_libfmod, "JNI_OnLoad"))(android_JavaVM, NULL);
+    }
+
+    handle = load_library("libminecraftpe.so", true);
     setup_chat_focus_hook();
 
     if (!handle) {
@@ -1754,6 +2369,20 @@ int main(int argc, char **argv) {
     }
     
     android_alloc_setup_hooks(handle);
+
+    void (*cpprest_init_func)(JavaVM *) = (void (*)(JavaVM *))android_dlsym(handle, "_Z12cpprest_initP7_JavaVM");
+    if (cpprest_init_func) {
+        cpprest_init_func(android_JavaVM);
+    }
+    void (*java_util_set_vm)(JavaVM *) = (void (*)(JavaVM *))android_dlsym(handle, "_ZN8JavaUtil5setVMEP7_JavaVM");
+    if (java_util_set_vm) {
+        java_util_set_vm(android_JavaVM);
+    }
+
+    int (*mc_gladLoadGLES2Loader)(void *) = (int (*)(void *))android_dlsym(handle, "gladLoadGLES2Loader");
+    if (mc_gladLoadGLES2Loader) {
+        mc_gladLoadGLES2Loader((void *)SDL_GL_GetProcAddress);
+    }
 
     if (!detect_version()) {
         free(storage_path);
@@ -1878,6 +2507,48 @@ int main(int argc, char **argv) {
         ninecraft_app_size = MINECRAFTCLIENT_SIZE_0_11_0;
     } else if (version_id == version_id_0_11_1) {
         ninecraft_app_size = MINECRAFTCLIENT_SIZE_0_11_1;
+    } else if (version_id == version_id_0_12_1) {
+        ninecraft_app_size = MINECRAFTCLIENT_SIZE_0_12_1;
+    } else if (version_id == version_id_0_12_2) {
+        ninecraft_app_size = MINECRAFTCLIENT_SIZE_0_12_2;
+    } else if (version_id == version_id_0_12_3) {
+        ninecraft_app_size = MINECRAFTCLIENT_SIZE_0_12_3;
+    } else if (version_id == version_id_0_13_2_1) {
+        ninecraft_app_size = MINECRAFTCLIENT_SIZE_0_13_2_1;
+    } else if (version_id == version_id_0_13_2_2) {
+        ninecraft_app_size = MINECRAFTCLIENT_SIZE_0_13_2_2;
+    } else if (version_id == version_id_0_13_2_3) {
+        ninecraft_app_size = MINECRAFTCLIENT_SIZE_0_13_2_3;
+    } else if (version_id == version_id_0_14_3_1) {
+        ninecraft_app_size = MINECRAFTCLIENT_SIZE_0_14_3_1;
+    } else if (version_id == version_id_0_14_3_2) {
+        ninecraft_app_size = MINECRAFTCLIENT_SIZE_0_14_3_2;
+    } else if (version_id == version_id_0_15_0_1) {
+        ninecraft_app_size = MINECRAFTCLIENT_SIZE_0_15_0_1;
+    } else if (version_id == version_id_0_15_1_2) {
+        ninecraft_app_size = MINECRAFTCLIENT_SIZE_0_15_1_2;
+    } else if (version_id == version_id_0_15_3_2) {
+        ninecraft_app_size = MINECRAFTCLIENT_SIZE_0_15_3_2;
+    } else if (version_id == version_id_0_15_4) {
+        ninecraft_app_size = MINECRAFTCLIENT_SIZE_0_15_4;
+    } else if (version_id == version_id_0_15_6) {
+        ninecraft_app_size = MINECRAFTCLIENT_SIZE_0_15_6;
+    } else if (version_id == version_id_0_15_7_2) {
+        ninecraft_app_size = MINECRAFTCLIENT_SIZE_0_15_7_2;
+    } else if (version_id == version_id_0_15_8) {
+        ninecraft_app_size = MINECRAFTCLIENT_SIZE_0_15_8;
+    } else if (version_id == version_id_0_15_90_0) {
+        ninecraft_app_size = MINECRAFTCLIENT_SIZE_0_15_90_0;
+    } else if (version_id == version_id_0_15_90_1) {
+        ninecraft_app_size = MINECRAFTCLIENT_SIZE_0_15_90_1;
+    } else if (version_id == version_id_0_15_90_2) {
+        ninecraft_app_size = MINECRAFTCLIENT_SIZE_0_15_90_2;
+    } else if (version_id == version_id_0_15_90_7) {
+        ninecraft_app_size = MINECRAFTCLIENT_SIZE_0_15_90_7;
+    } else if (version_id == version_id_0_15_90_8) {
+        ninecraft_app_size = MINECRAFTCLIENT_SIZE_0_15_90_8;
+    } else if (version_id == version_id_0_16_0_5) {
+        ninecraft_app_size = MINECRAFTCLIENT_SIZE_0_16_0_5;
     }
     ninecraft_app = malloc(ninecraft_app_size);
     if (version_id >= version_id_0_9_0 && version_id <= version_id_0_9_5) {
@@ -1897,6 +2568,18 @@ int main(int argc, char **argv) {
         }
         if (ext_off) {
             android_string_equ((android_string_t *)((char *)ninecraft_app + ext_off), storage_path);
+        }
+    } else {
+        uintptr_t storage_offset = 0;
+        if (version_id >= version_id_0_14_3_1 && version_id <= version_id_0_14_3_2) {
+            storage_offset = 0x4c;
+        } else if (version_id >= version_id_0_13_2_1 && version_id <= version_id_0_13_2_3) {
+            storage_offset = 0x44;
+        }
+        if (storage_offset) {
+            char worlds_path[1024];
+            snprintf(worlds_path, sizeof(worlds_path), "%s/minecraftWorlds", storage_path);
+            android_string_equ((android_string_t *)((char *)ninecraft_app + storage_offset), worlds_path);
         }
     }
 
@@ -1995,6 +2678,310 @@ int main(int argc, char **argv) {
             DETOUR(android_dlsym(handle, "_ZN26HTTPRequestInternalAndroid4sendEv"), ninecraft_http_send, 1);
             DETOUR(android_dlsym(handle, "_ZN26HTTPRequestInternalAndroid5abortEv"), ninecraft_http_abort, 1);
             DETOUR(android_dlsym(handle, "_ZN12AndroidStore21createGooglePlayStoreERKSsR13StoreListener"), GET_SYSV_WRAPPER(ninecraft_store_create), 1);
+        } else if (version_id >= version_id_0_12_1 && version_id <= version_id_0_12_3) {
+            memcpy(&platform_vtable_0_12_1, plat->vtable, sizeof(app_platform_vtable_0_12_1_t));
+            plat->vtable = (void **)&platform_vtable_0_12_1;
+            platform_vtable_0_12_1.getDataUrl = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getDataUrl);
+            platform_vtable_0_12_1.getImagePath = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getImagePath);
+            platform_vtable_0_12_1.loadPNG = (void *)AppPlatform_linux$loadPNG_0_9_0;
+            platform_vtable_0_12_1.loadTGA = (void *)AppPlatform_linux$loadTGA_0_9_0;
+            platform_vtable_0_12_1.getDateString = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getDateString);
+            platform_vtable_0_12_1.readAssetFile = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$readAssetFile_0_9_0);
+            platform_vtable_0_12_1.getScreenHeight = (void *)AppPlatform_linux$getScreenHeight;
+            platform_vtable_0_12_1.getScreenWidth = (void *)AppPlatform_linux$getScreenWidth;
+            platform_vtable_0_12_1.showKeyboard = (void *)AppPlatform_linux$showKeyboard;
+            platform_vtable_0_12_1.hideKeyboard = (void *)AppPlatform_linux$hideKeyboard;
+            platform_vtable_0_12_1.getBroadcastAddresses = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getBroadcastAddresses);
+            platform_vtable_0_12_1.getAvailableMemory = (void *)AppPlatform_linux$getAvailableMemory;
+            platform_vtable_0_12_1.getPlatformStringVar = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getPlatformStringVar);
+            platform_vtable_0_12_1.getLoginInformation = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getLoginInformation);
+            platform_vtable_0_12_1.setLoginInformation = (void *)AppPlatform_linux$setLoginInformation;
+            platform_vtable_0_12_1.isNetworkEnabled = (void *)AppPlatform_linux$isNetworkEnabled;
+            platform_vtable_0_12_1.getPixelsPerMillimeter = (void *)AppPlatform_linux$getPixelsPerMillimeter;
+            platform_vtable_0_12_1.swapBuffers = (void *)AppPlatform_linux$swapBuffers;
+            platform_vtable_0_12_1.getSystemRegion = (void *)AppPlatform_linux$getSystemRegion;
+            platform_vtable_0_12_1.getGraphicsVendor = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getGraphicsVendor);
+            platform_vtable_0_12_1.getGraphicsRenderer = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getGraphicsRenderer);
+            platform_vtable_0_12_1.getGraphicsVersion = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getGraphicsVersion);
+            platform_vtable_0_12_1.getGraphicsExtensions = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getGraphicsExtensions);
+            platform_vtable_0_12_1.getExternalStoragePath = (void *)AppPlatform_linux$getExternalStoragePath;
+            platform_vtable_0_12_1.getInternalStoragePath = (void *)AppPlatform_linux$getInternalStoragePath;
+            platform_vtable_0_12_1.getApplicationId = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getApplicationId);
+            platform_vtable_0_12_1.getDeviceId = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getDeviceId);
+            platform_vtable_0_12_1.createUUID = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$createUUID);
+            platform_vtable_0_12_1.isFirstSnoopLaunch = (void *)AppPlatform_linux$isFirstSnoopLaunch;
+            platform_vtable_0_12_1.hasHardwareInformationChanged = (void *)AppPlatform_linux$hasHardwareInformationChanged;
+            platform_vtable_0_12_1.isTablet = (void *)AppPlatform_linux$isTablet;
+            platform_vtable_0_12_1.pickImage = (void *)AppPlatform_linux$pickImage;
+            platform_vtable_0_12_1.hideMousePointer = (void *)grab_mouse;
+            platform_vtable_0_12_1.showMousePointer = (void *)release_mouse;
+
+            DETOUR(android_dlsym(handle, "_ZN26HTTPRequestInternalAndroidC2ER11HTTPRequest"), ninecraft_http_construct, 1);
+            DETOUR(android_dlsym(handle, "_ZN26HTTPRequestInternalAndroid4sendEv"), ninecraft_http_send, 1);
+            DETOUR(android_dlsym(handle, "_ZN26HTTPRequestInternalAndroid5abortEv"), ninecraft_http_abort, 1);
+            DETOUR(android_dlsym(handle, "_ZN12AndroidStore21createGooglePlayStoreERKSsR13StoreListener"), GET_SYSV_WRAPPER(ninecraft_store_create), 1);
+            DETOUR(android_dlsym(handle, "_ZN19AppPlatform_android17getKeyboardHeightEv"), AppPlatform_android$getKeyboardHeight, 1);
+        } else if (version_id >= version_id_0_13_2_1 && version_id <= version_id_0_13_2_3) {
+            memcpy(&platform_vtable_0_13_0, plat->vtable, sizeof(app_platform_vtable_0_13_0_t));
+            plat->vtable = (void **)&platform_vtable_0_13_0;
+            platform_vtable_0_13_0.getDataUrl = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getDataUrl);
+            platform_vtable_0_13_0.getImagePath = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getImagePath);
+            platform_vtable_0_13_0.loadPNG = (void *)AppPlatform_linux$loadPNG_0_9_0;
+            platform_vtable_0_13_0.loadTGA = (void *)AppPlatform_linux$loadTGA_0_9_0;
+            platform_vtable_0_13_0.getDateString = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getDateString);
+            platform_vtable_0_13_0.readAssetFile = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$readAssetFile_0_9_0);
+            platform_vtable_0_13_0.getScreenHeight = (void *)AppPlatform_linux$getScreenHeight;
+            platform_vtable_0_13_0.getScreenWidth = (void *)AppPlatform_linux$getScreenWidth;
+            platform_vtable_0_13_0.showKeyboard = (void *)AppPlatform_linux$showKeyboard;
+            platform_vtable_0_13_0.hideKeyboard = (void *)AppPlatform_linux$hideKeyboard;
+            platform_vtable_0_13_0.getBroadcastAddresses = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getBroadcastAddresses);
+            platform_vtable_0_13_0.getAvailableMemory = (void *)AppPlatform_linux$getAvailableMemory;
+            platform_vtable_0_13_0.getPlatformStringVar = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getPlatformStringVar);
+            platform_vtable_0_13_0.isNetworkEnabled = (void *)AppPlatform_linux$isNetworkEnabled;
+            platform_vtable_0_13_0.getPixelsPerMillimeter = (void *)AppPlatform_linux$getPixelsPerMillimeter;
+            platform_vtable_0_13_0.swapBuffers = (void *)AppPlatform_linux$swapBuffers;
+            platform_vtable_0_13_0.getSystemRegion = (void *)AppPlatform_linux$getSystemRegion;
+            platform_vtable_0_13_0.getGraphicsVendor = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getGraphicsVendor);
+            platform_vtable_0_13_0.getGraphicsRenderer = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getGraphicsRenderer);
+            platform_vtable_0_13_0.getGraphicsVersion = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getGraphicsVersion);
+            platform_vtable_0_13_0.getGraphicsExtensions = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getGraphicsExtensions);
+            platform_vtable_0_13_0.getExternalStoragePath = (void *)AppPlatform_linux$getExternalStoragePath;
+            platform_vtable_0_13_0.getInternalStoragePath = (void *)AppPlatform_linux$getInternalStoragePath;
+            platform_vtable_0_13_0.getUserdataPath = (void *)AppPlatform_linux$getUserdataPath;
+            platform_vtable_0_13_0.getApplicationId = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getApplicationId);
+            platform_vtable_0_13_0.getDeviceId = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getDeviceId);
+            platform_vtable_0_13_0.createUUID = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$createUUID);
+            platform_vtable_0_13_0.isFirstSnoopLaunch = (void *)AppPlatform_linux$isFirstSnoopLaunch;
+            platform_vtable_0_13_0.hasHardwareInformationChanged = (void *)AppPlatform_linux$hasHardwareInformationChanged;
+            platform_vtable_0_13_0.isTablet = (void *)AppPlatform_linux$isTablet;
+            platform_vtable_0_13_0.pickImage = (void *)AppPlatform_linux$pickImage;
+            platform_vtable_0_13_0.hideMousePointer = (void *)grab_mouse;
+            platform_vtable_0_13_0.showMousePointer = (void *)release_mouse;
+
+            DETOUR(android_dlsym(handle, "_ZN26HTTPRequestInternalAndroidC2ER11HTTPRequest"), ninecraft_http_construct, 1);
+            DETOUR(android_dlsym(handle, "_ZN26HTTPRequestInternalAndroid4sendEv"), ninecraft_http_send, 1);
+            DETOUR(android_dlsym(handle, "_ZN26HTTPRequestInternalAndroid5abortEv"), ninecraft_http_abort, 1);
+            DETOUR(android_dlsym(handle, "_ZN12AndroidStore21createGooglePlayStoreERKSsR13StoreListener"), GET_SYSV_WRAPPER(ninecraft_store_create), 1);
+            DETOUR(android_dlsym(handle, "_ZN19AppPlatform_android17getKeyboardHeightEv"), AppPlatform_android$getKeyboardHeight, 1);
+        } else if (version_id >= version_id_0_14_3_1 && version_id <= version_id_0_14_3_2) {
+            memcpy(&platform_vtable_0_14_0, plat->vtable, sizeof(app_platform_vtable_0_14_0_t));
+            plat->vtable = (void **)&platform_vtable_0_14_0;
+            platform_vtable_0_14_0.getDataUrl = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getDataUrl);
+            platform_vtable_0_14_0.getImagePath = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getImagePath);
+            platform_vtable_0_14_0.loadPNG = (void *)AppPlatform_linux$loadPNG_0_9_0;
+            platform_vtable_0_14_0.loadTGA = (void *)AppPlatform_linux$loadTGA_0_9_0;
+            platform_vtable_0_14_0.getDateString = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getDateString);
+            platform_vtable_0_14_0.readAssetFile = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$readAssetFile_0_9_0);
+            platform_vtable_0_14_0.getScreenHeight = (void *)AppPlatform_linux$getScreenHeight;
+            platform_vtable_0_14_0.getScreenWidth = (void *)AppPlatform_linux$getScreenWidth;
+            platform_vtable_0_14_0.showKeyboard = (void *)AppPlatform_linux$showKeyboard;
+            platform_vtable_0_14_0.hideKeyboard = (void *)AppPlatform_linux$hideKeyboard;
+            platform_vtable_0_14_0.getBroadcastAddresses = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getBroadcastAddresses);
+            platform_vtable_0_14_0.getAvailableMemory = (void *)AppPlatform_linux$getAvailableMemory;
+            platform_vtable_0_14_0.getTotalMemory = (void *)AppPlatform_linux$getTotalMemory;
+            platform_vtable_0_14_0.getPlatformStringVar = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getPlatformStringVar);
+            platform_vtable_0_14_0.isNetworkEnabled = (void *)AppPlatform_linux$isNetworkEnabled;
+            platform_vtable_0_14_0.getPixelsPerMillimeter = (void *)AppPlatform_linux$getPixelsPerMillimeter;
+            platform_vtable_0_14_0.swapBuffers = (void *)AppPlatform_linux$swapBuffers;
+            platform_vtable_0_14_0.getSystemRegion = (void *)AppPlatform_linux$getSystemRegion;
+            platform_vtable_0_14_0.getGraphicsVendor = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getGraphicsVendor);
+            platform_vtable_0_14_0.getGraphicsRenderer = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getGraphicsRenderer);
+            platform_vtable_0_14_0.getGraphicsVersion = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getGraphicsVersion);
+            platform_vtable_0_14_0.getGraphicsExtensions = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getGraphicsExtensions);
+            platform_vtable_0_14_0.getExternalStoragePath = (void *)AppPlatform_linux$getExternalStoragePath;
+            platform_vtable_0_14_0.getInternalStoragePath = (void *)AppPlatform_linux$getInternalStoragePath;
+            platform_vtable_0_14_0.getUserdataPath = (void *)AppPlatform_linux$getUserdataPath;
+            platform_vtable_0_14_0.getUserdataPathForLevels = (void *)AppPlatform_linux$getUserdataPathForLevels;
+            platform_vtable_0_14_0.getPlatformTempPath = (void *)AppPlatform_linux$getPlatformTempPath;
+            platform_vtable_0_14_0.getApplicationId = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getApplicationId);
+            platform_vtable_0_14_0.getDeviceId = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getDeviceId);
+            platform_vtable_0_14_0.createUUID = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$createUUID);
+            platform_vtable_0_14_0.isFirstSnoopLaunch = (void *)AppPlatform_linux$isFirstSnoopLaunch;
+            platform_vtable_0_14_0.hasHardwareInformationChanged = (void *)AppPlatform_linux$hasHardwareInformationChanged;
+            platform_vtable_0_14_0.isTablet = (void *)AppPlatform_linux$isTablet;
+            platform_vtable_0_14_0.pickImage = (void *)AppPlatform_linux$pickImage;
+            platform_vtable_0_14_0.hideMousePointer = (void *)grab_mouse;
+            platform_vtable_0_14_0.showMousePointer = (void *)release_mouse;
+
+            DETOUR(android_dlsym(handle, "_ZN26HTTPRequestInternalAndroidC2ER11HTTPRequest"), ninecraft_http_construct, 1);
+            DETOUR(android_dlsym(handle, "_ZN26HTTPRequestInternalAndroid4sendEv"), ninecraft_http_send, 1);
+            DETOUR(android_dlsym(handle, "_ZN26HTTPRequestInternalAndroid5abortEv"), ninecraft_http_abort, 1);
+            DETOUR(android_dlsym(handle, "_ZN12AndroidStore21createGooglePlayStoreERKSsR13StoreListener"), GET_SYSV_WRAPPER(ninecraft_store_create), 1);
+            DETOUR(android_dlsym(handle, "_ZN19AppPlatform_android17getKeyboardHeightEv"), AppPlatform_android$getKeyboardHeight, 1);
+        } else if (version_id >= version_id_0_15_0_1 && version_id <= version_id_0_15_8) {
+            memcpy(&platform_vtable_0_15_1, plat->vtable, sizeof(app_platform_vtable_0_15_1_t));
+            plat->vtable = (void **)&platform_vtable_0_15_1;
+            platform_vtable_0_15_1.getDataUrl = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getDataUrl);
+            platform_vtable_0_15_1.getAlternateDataUrl = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getDataUrl);
+            platform_vtable_0_15_1.getPackagePath = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getPackagePath);
+            if (version_id == version_id_0_15_0_1) {
+                platform_vtable_0_15_1.loadPNG = (void *)AppPlatform_linux$loadPNG_0_15_0;
+                platform_vtable_0_15_1.loadTGA = (void *)AppPlatform_linux$loadTGA_0_15_0;
+                platform_vtable_0_15_1.loadJPEG = (void *)AppPlatform_linux$loadPNG_0_15_0;
+            } else {
+                platform_vtable_0_15_1.loadPNG = (void *)AppPlatform_linux$loadPNG_0_15_1;
+                platform_vtable_0_15_1.loadTGA = (void *)AppPlatform_linux$loadTGA_0_15_1;
+                platform_vtable_0_15_1.loadJPEG = (void *)AppPlatform_linux$loadPNG_0_15_1;
+            }
+            platform_vtable_0_15_1.getDateString = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getDateString);
+            platform_vtable_0_15_1.readAssetFile = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$readAssetFile_0_9_0);
+            platform_vtable_0_15_1.getScreenHeight = (void *)AppPlatform_linux$getScreenHeight;
+            platform_vtable_0_15_1.getScreenWidth = (void *)AppPlatform_linux$getScreenWidth;
+            platform_vtable_0_15_1.showKeyboard = (void *)AppPlatform_linux$showKeyboard;
+            platform_vtable_0_15_1.hideKeyboard = (void *)AppPlatform_linux$hideKeyboard;
+            platform_vtable_0_15_1.getBroadcastAddresses = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getBroadcastAddresses);
+            platform_vtable_0_15_1.getAvailableMemory = (void *)AppPlatform_linux$getAvailableMemory;
+            platform_vtable_0_15_1.getTotalMemory = (void *)AppPlatform_linux$getTotalMemory;
+            platform_vtable_0_15_1.getPlatformStringVar = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getPlatformStringVar);
+            platform_vtable_0_15_1.isNetworkEnabled = (void *)AppPlatform_linux$isNetworkEnabled;
+            platform_vtable_0_15_1.getPixelsPerMillimeter = (void *)AppPlatform_linux$getPixelsPerMillimeter;
+            platform_vtable_0_15_1.swapBuffers = (void *)AppPlatform_linux$swapBuffers;
+            platform_vtable_0_15_1.getSystemRegion = (void *)AppPlatform_linux$getSystemRegion;
+            platform_vtable_0_15_1.getGraphicsVendor = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getGraphicsVendor);
+            platform_vtable_0_15_1.getGraphicsRenderer = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getGraphicsRenderer);
+            platform_vtable_0_15_1.getGraphicsVersion = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getGraphicsVersion);
+            platform_vtable_0_15_1.getGraphicsExtensions = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getGraphicsExtensions);
+            platform_vtable_0_15_1.getExternalStoragePath = (void *)AppPlatform_linux$getExternalStoragePath;
+            platform_vtable_0_15_1.getInternalStoragePath = (void *)AppPlatform_linux$getInternalStoragePath;
+            platform_vtable_0_15_1.getUserdataPath = (void *)AppPlatform_linux$getUserdataPath;
+            platform_vtable_0_15_1.getUserdataPathForLevels = (void *)AppPlatform_linux$getUserdataPathForLevels;
+            platform_vtable_0_15_1.getPlatformTempPath = (void *)AppPlatform_linux$getPlatformTempPath;
+            platform_vtable_0_15_1.getApplicationId = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getApplicationId);
+            platform_vtable_0_15_1.getDeviceId = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getDeviceId);
+            platform_vtable_0_15_1.createUUID = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$createUUID);
+            platform_vtable_0_15_1.isFirstSnoopLaunch = (void *)AppPlatform_linux$isFirstSnoopLaunch;
+            platform_vtable_0_15_1.hasHardwareInformationChanged = (void *)AppPlatform_linux$hasHardwareInformationChanged;
+            platform_vtable_0_15_1.isTablet = (void *)AppPlatform_linux$isTablet;
+            platform_vtable_0_15_1.pickImage = (void *)AppPlatform_linux$pickImage;
+            platform_vtable_0_15_1.hideMousePointer = (void *)grab_mouse;
+            platform_vtable_0_15_1.showMousePointer = (void *)release_mouse;
+
+            DETOUR(android_dlsym(handle, "_ZN26HTTPRequestInternalAndroidC2ER11HTTPRequest"), ninecraft_http_construct, 1);
+            DETOUR(android_dlsym(handle, "_ZN26HTTPRequestInternalAndroid4sendEv"), ninecraft_http_send, 1);
+            DETOUR(android_dlsym(handle, "_ZN26HTTPRequestInternalAndroid5abortEv"), ninecraft_http_abort, 1);
+            if (version_id == version_id_0_15_0_1) {
+                DETOUR(android_dlsym(handle, "_ZN12AndroidStore21createGooglePlayStoreERKSsR13StoreListener"), GET_SYSV_WRAPPER(ninecraft_store_create_0_15_0), 1);
+            } else {
+                DETOUR(android_dlsym(handle, "_ZN12AndroidStore21createGooglePlayStoreERKSsR13StoreListener"), GET_SYSV_WRAPPER(ninecraft_store_create_0_15_1), 1);
+            }
+            DETOUR(android_dlsym(handle, "_ZN19AppPlatform_android17getKeyboardHeightEv"), AppPlatform_android$getKeyboardHeight, 1);
+            DETOUR(android_dlsym(handle, "_ZN4xbox8services12java_interop16read_config_fileEv"), GET_SYSV_WRAPPER(xbox_read_config_file), 1);
+            DETOUR(android_dlsym(handle, "_ZN4xbox8services12java_interop22get_local_storage_pathEv"), GET_SYSV_WRAPPER(xbox_get_local_storage_path), 1);
+            DETOUR(android_dlsym(handle, "_ZN4xbox8services12java_interop8init_cllERKSs"), GET_SYSV_WRAPPER(xbox_init_cll), 1);
+            DETOUR(android_dlsym(handle, "_ZN4xbox8services12java_interop7log_cllERKSsS3_S3_"), GET_SYSV_WRAPPER(xbox_log_cll), 1);
+            DETOUR(android_dlsym(handle, "_ZN4xbox8services12java_interop11get_java_vmEv"), xbox_get_java_vm, 1);
+            DETOUR(android_dlsym(handle, "_ZN4xbox8services6system17user_impl_android21init_sign_in_activityEi"), GET_SYSV_WRAPPER(xbox_init_sign_in_activity), 1);
+        } else if (version_id >= version_id_0_15_90_0 && version_id <= version_id_0_15_90_7) {
+            memcpy(&platform_vtable_0_15_90_0, plat->vtable, sizeof(app_platform_vtable_0_15_90_0_t));
+            plat->vtable = (void **)&platform_vtable_0_15_90_0;
+            platform_vtable_0_15_90_0.getDataUrl = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getDataUrl);
+            platform_vtable_0_15_90_0.getAlternateDataUrl = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getDataUrl);
+            platform_vtable_0_15_90_0.getPackagePath = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getPackagePath);
+            platform_vtable_0_15_90_0.loadPNG = (void *)AppPlatform_linux$loadPNG_0_15_90;
+            platform_vtable_0_15_90_0.loadTGA = (void *)AppPlatform_linux$loadTGA_0_15_90;
+            platform_vtable_0_15_90_0.loadJPEG = (void *)AppPlatform_linux$loadPNG_0_15_90;
+            platform_vtable_0_15_90_0.getDateString = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getDateString);
+            platform_vtable_0_15_90_0.readAssetFile = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$readAssetFile_0_9_0);
+            platform_vtable_0_15_90_0.getScreenHeight = (void *)AppPlatform_linux$getScreenHeight;
+            platform_vtable_0_15_90_0.getScreenWidth = (void *)AppPlatform_linux$getScreenWidth;
+            platform_vtable_0_15_90_0.showKeyboard = (void *)AppPlatform_linux$showKeyboard;
+            platform_vtable_0_15_90_0.hideKeyboard = (void *)AppPlatform_linux$hideKeyboard;
+            platform_vtable_0_15_90_0.getBroadcastAddresses = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getBroadcastAddresses);
+            platform_vtable_0_15_90_0.getAvailableMemory = (void *)AppPlatform_linux$getAvailableMemory;
+            platform_vtable_0_15_90_0.getTotalMemory = (void *)AppPlatform_linux$getTotalMemory;
+            platform_vtable_0_15_90_0.getPlatformStringVar = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getPlatformStringVar);
+            platform_vtable_0_15_90_0.isNetworkEnabled = (void *)AppPlatform_linux$isNetworkEnabled;
+            platform_vtable_0_15_90_0.getPixelsPerMillimeter = (void *)AppPlatform_linux$getPixelsPerMillimeter;
+            platform_vtable_0_15_90_0.swapBuffers = (void *)AppPlatform_linux$swapBuffers;
+            platform_vtable_0_15_90_0.getSystemRegion = (void *)AppPlatform_linux$getSystemRegion;
+            platform_vtable_0_15_90_0.getExternalStoragePath = (void *)AppPlatform_linux$getExternalStoragePath;
+            platform_vtable_0_15_90_0.getInternalStoragePath = (void *)AppPlatform_linux$getInternalStoragePath;
+            platform_vtable_0_15_90_0.getUserdataPath = (void *)AppPlatform_linux$getUserdataPath;
+            platform_vtable_0_15_90_0.getUserdataPathForLevels = (void *)AppPlatform_linux$getUserdataPathForLevels;
+            platform_vtable_0_15_90_0.getPlatformTempPath = (void *)AppPlatform_linux$getPlatformTempPath;
+            platform_vtable_0_15_90_0.getApplicationId = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getApplicationId);
+            platform_vtable_0_15_90_0.getDeviceId = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getDeviceId);
+            platform_vtable_0_15_90_0.createUUID = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$createUUID);
+            platform_vtable_0_15_90_0.isFirstSnoopLaunch = (void *)AppPlatform_linux$isFirstSnoopLaunch;
+            platform_vtable_0_15_90_0.hasHardwareInformationChanged = (void *)AppPlatform_linux$hasHardwareInformationChanged;
+            platform_vtable_0_15_90_0.isTablet = (void *)AppPlatform_linux$isTablet;
+            platform_vtable_0_15_90_0.pickImage = (void *)AppPlatform_linux$pickImage;
+            platform_vtable_0_15_90_0.hideMousePointer = (void *)grab_mouse;
+            platform_vtable_0_15_90_0.showMousePointer = (void *)release_mouse;
+
+            DETOUR(android_dlsym(handle, "_ZN26HTTPRequestInternalAndroidC2ER11HTTPRequest"), ninecraft_http_construct, 1);
+            DETOUR(android_dlsym(handle, "_ZN26HTTPRequestInternalAndroid4sendEv"), ninecraft_http_send, 1);
+            DETOUR(android_dlsym(handle, "_ZN26HTTPRequestInternalAndroid5abortEv"), ninecraft_http_abort, 1);
+            DETOUR(android_dlsym(handle, "_ZN12AndroidStore21createGooglePlayStoreERKSsR13StoreListener"), GET_SYSV_WRAPPER(ninecraft_store_create_0_15_1), 1);
+            DETOUR(android_dlsym(handle, "_ZN19AppPlatform_android17getKeyboardHeightEv"), AppPlatform_android$getKeyboardHeight, 1);
+            DETOUR(android_dlsym(handle, "_ZN4xbox8services12java_interop16read_config_fileEv"), GET_SYSV_WRAPPER(xbox_read_config_file), 1);
+            DETOUR(android_dlsym(handle, "_ZN4xbox8services12java_interop22get_local_storage_pathEv"), GET_SYSV_WRAPPER(xbox_get_local_storage_path), 1);
+            DETOUR(android_dlsym(handle, "_ZN4xbox8services12java_interop8init_cllERKSs"), GET_SYSV_WRAPPER(xbox_init_cll), 1);
+            DETOUR(android_dlsym(handle, "_ZN4xbox8services12java_interop7log_cllERKSsS3_S3_"), GET_SYSV_WRAPPER(xbox_log_cll), 1);
+            DETOUR(android_dlsym(handle, "_ZN4xbox8services12java_interop11get_java_vmEv"), xbox_get_java_vm, 1);
+            DETOUR(android_dlsym(handle, "_ZN4xbox8services6system17user_impl_android21init_sign_in_activityEi"), GET_SYSV_WRAPPER(xbox_init_sign_in_activity), 1);
+        } else if (version_id >= version_id_0_15_90_8 && version_id <= version_id_0_16_0_5) {
+            memcpy(&platform_vtable_0_16_0, plat->vtable, sizeof(app_platform_vtable_0_16_0_t));
+            plat->vtable = (void **)&platform_vtable_0_16_0;
+            platform_vtable_0_16_0.getDataUrl = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getDataUrl);
+            platform_vtable_0_16_0.getAlternateDataUrl = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getDataUrl);
+            platform_vtable_0_16_0.getPackagePath = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getPackagePath);
+            platform_vtable_0_16_0.loadPNG = (void *)AppPlatform_linux$loadPNG_0_15_90;
+            platform_vtable_0_16_0.loadTGA = (void *)AppPlatform_linux$loadTGA_0_15_90;
+            platform_vtable_0_16_0.loadJPEG = (void *)AppPlatform_linux$loadPNG_0_15_90;
+            platform_vtable_0_16_0.getDateString = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getDateString);
+            platform_vtable_0_16_0.readAssetFile = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$readAssetFile_0_9_0);
+            platform_vtable_0_16_0.getScreenHeight = (void *)AppPlatform_linux$getScreenHeight;
+            platform_vtable_0_16_0.getScreenWidth = (void *)AppPlatform_linux$getScreenWidth;
+            platform_vtable_0_16_0.showKeyboard = (void *)AppPlatform_linux$showKeyboard;
+            platform_vtable_0_16_0.hideKeyboard = (void *)AppPlatform_linux$hideKeyboard;
+            platform_vtable_0_16_0.getBroadcastAddresses = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getBroadcastAddresses);
+            platform_vtable_0_16_0.getAvailableMemory = (void *)AppPlatform_linux$getAvailableMemory;
+            platform_vtable_0_16_0.getPlatformStringVar = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getPlatformStringVar);
+            platform_vtable_0_16_0.isNetworkEnabled = (void *)AppPlatform_linux$isNetworkEnabled;
+            platform_vtable_0_16_0.getPixelsPerMillimeter = (void *)AppPlatform_linux$getPixelsPerMillimeter;
+            platform_vtable_0_16_0.swapBuffers = (void *)AppPlatform_linux$swapBuffers;
+            platform_vtable_0_16_0.getSystemRegion = (void *)AppPlatform_linux$getSystemRegion;
+            platform_vtable_0_16_0.getExternalStoragePath = (void *)AppPlatform_linux$getExternalStoragePath;
+            platform_vtable_0_16_0.getInternalStoragePath = (void *)AppPlatform_linux$getInternalStoragePath;
+            platform_vtable_0_16_0.getUserdataPath = (void *)AppPlatform_linux$getUserdataPath;
+            platform_vtable_0_16_0.getUserdataPathForLevels = (void *)AppPlatform_linux$getUserdataPathForLevels;
+            platform_vtable_0_16_0.getPlatformTempPath = (void *)AppPlatform_linux$getPlatformTempPath;
+            platform_vtable_0_16_0.getApplicationId = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getApplicationId);
+            platform_vtable_0_16_0.getDeviceId = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$getDeviceId);
+            platform_vtable_0_16_0.createUUID = (void *)GET_SYSV_WRAPPER(AppPlatform_linux$createUUID);
+            platform_vtable_0_16_0.isFirstSnoopLaunch = (void *)AppPlatform_linux$isFirstSnoopLaunch;
+            platform_vtable_0_16_0.hasHardwareInformationChanged = (void *)AppPlatform_linux$hasHardwareInformationChanged;
+            platform_vtable_0_16_0.isTablet = (void *)AppPlatform_linux$isTablet;
+            platform_vtable_0_16_0.pickImage = (void *)AppPlatform_linux$pickImage;
+            platform_vtable_0_16_0.hideMousePointer = (void *)grab_mouse;
+            platform_vtable_0_16_0.showMousePointer = (void *)release_mouse;
+
+            DETOUR(android_dlsym(handle, "_ZN26HTTPRequestInternalAndroidC2ER11HTTPRequest"), ninecraft_http_construct, 1);
+            DETOUR(android_dlsym(handle, "_ZN26HTTPRequestInternalAndroid4sendEv"), ninecraft_http_send, 1);
+            DETOUR(android_dlsym(handle, "_ZN26HTTPRequestInternalAndroid5abortEv"), ninecraft_http_abort, 1);
+            DETOUR(android_dlsym(handle, "_ZN12AndroidStore21createGooglePlayStoreERKSsR13StoreListener"), GET_SYSV_WRAPPER(ninecraft_store_create_0_15_1), 1);
+            DETOUR(android_dlsym(handle, "_ZN19AppPlatform_android17getKeyboardHeightEv"), AppPlatform_android$getKeyboardHeight, 1);
+            DETOUR(android_dlsym(handle, "_ZN4xbox8services12java_interop16read_config_fileEv"), GET_SYSV_WRAPPER(xbox_read_config_file), 1);
+            DETOUR(android_dlsym(handle, "_ZN4xbox8services12java_interop22get_local_storage_pathEv"), GET_SYSV_WRAPPER(xbox_get_local_storage_path), 1);
+            DETOUR(android_dlsym(handle, "_ZN4xbox8services12java_interop8init_cllERKSs"), GET_SYSV_WRAPPER(xbox_init_cll), 1);
+            DETOUR(android_dlsym(handle, "_ZN4xbox8services12java_interop7log_cllERKSsS3_S3_"), GET_SYSV_WRAPPER(xbox_log_cll), 1);
+            DETOUR(android_dlsym(handle, "_ZN4xbox8services12java_interop11get_java_vmEv"), xbox_get_java_vm, 1);
+            DETOUR(android_dlsym(handle, "_ZN4xbox8services6system17user_impl_android21init_sign_in_activityEi"), GET_SYSV_WRAPPER(xbox_init_sign_in_activity), 1);
+        }
+        if (version_id >= version_id_0_15_0_1) {
+            void *model_part_load_sym = android_dlsym(handle, "_ZN9ModelPart4loadERK11GeometryPtrRKSsPS_");
+            if (model_part_load_sym) {
+                model_part_load_detour = DETOUR(model_part_load_sym, hook_model_part_load, 1);
+            }
+            void *geom_get_node_sym = android_dlsym(handle, "_ZNK8Geometry7getNodeERKSs");
+            if (geom_get_node_sym) {
+                geometry_get_node_detour = DETOUR(geom_get_node_sym, hook_geometry_get_node, 1);
+            }
+            void *geom_group_get_sym = android_dlsym(handle, "_ZN13GeometryGroup11getGeometryERKSs");
+            if (geom_group_get_sym) {
+                geom_group_get_geom_detour = DETOUR(geom_group_get_sym, hook_geometry_group_get_geom, 1);
+            }
         }
         context->platform = plat;
 #ifdef _WIN32
@@ -2158,13 +3145,15 @@ int main(int argc, char **argv) {
     }
     
     while (running) {
-        if (((bool *)ninecraft_app)[minecraft_isgrabbed_offset]) {
-            if (!mouse_pointer_hidden) {
-                grab_mouse();
-            }
-        } else {
-            if (mouse_pointer_hidden) {
-                release_mouse();
+        if (version_id <= version_id_0_11_1) {
+            if (((bool *)ninecraft_app)[minecraft_isgrabbed_offset]) {
+                if (!mouse_pointer_hidden) {
+                    grab_mouse();
+                }
+            } else {
+                if (mouse_pointer_hidden) {
+                    release_mouse();
+                }
             }
         }
         if (version_id >= version_id_0_6_0 && version_id <= version_id_0_8_1) {

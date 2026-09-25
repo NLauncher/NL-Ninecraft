@@ -22,6 +22,8 @@ minecraft_set_size_t minecraft_set_size = NULL;
 ninecraft_app_update_t ninecraft_app_update = NULL;
 ninecraft_app_handle_back_t ninecraft_app_handle_back = NULL;
 minecraft_client_set_size_t minecraft_client_set_size = NULL;
+minecraft_client_set_ui_size_and_scale_t minecraft_client_set_ui_size_and_scale = NULL;
+minecraft_client_set_rendering_size_t minecraft_client_set_rendering_size = NULL;
 minecraft_client_handle_back_t minecraft_client_handle_back = NULL;
 minecraft_update_t minecraft_update = NULL;
 minecraft_client_construct_t minecraft_client_construct = NULL;
@@ -92,7 +94,7 @@ void *minecraft_get_options(void *minecraft, int version_id) {
         mc_options = (char *)minecraft + MINECRAFT_OPTIONS_OFFSET_0_9_4;
     } else if (version_id == version_id_0_9_5) {
         mc_options = (char *)minecraft + MINECRAFT_OPTIONS_OFFSET_0_9_5;
-    } else if (version_id >= version_id_0_10_0 && version_id <= version_id_0_11_1) {
+    } else if (version_id >= version_id_0_10_0 && version_id <= version_id_0_15_6) {
         mc_options = (char *)minecraft_client_get_options(minecraft);
     }
     return (void *)mc_options;
@@ -351,8 +353,13 @@ void minecraft_setup_hooks(void *handle) {
     ninecraft_app_update = (ninecraft_app_update_t)android_dlsym(handle, "_ZN12NinecraftApp6updateEv");
     ninecraft_app_handle_back = (ninecraft_app_handle_back_t)android_dlsym(handle, "_ZN12NinecraftApp10handleBackEb");
     minecraft_client_set_size = (minecraft_client_set_size_t)android_dlsym(handle, "_ZN15MinecraftClient7setSizeEiif");
+    minecraft_client_set_ui_size_and_scale = (minecraft_client_set_ui_size_and_scale_t)android_dlsym(handle, "_ZN15MinecraftClient17setUISizeAndScaleEiif");
+    minecraft_client_set_rendering_size = (minecraft_client_set_rendering_size_t)android_dlsym(handle, "_ZN15MinecraftClient16setRenderingSizeEii");
     minecraft_client_handle_back = (minecraft_client_handle_back_t)android_dlsym(handle, "_ZN15MinecraftClient10handleBackEb");
-    minecraft_update = (minecraft_update_t)android_dlsym(handle, "_ZN9Minecraft6updateEv");
+    minecraft_update = (minecraft_update_t)android_dlsym(handle, "_ZN15MinecraftClient6updateEv");
+    if (!minecraft_update) {
+        minecraft_update = (minecraft_update_t)android_dlsym(handle, "_ZN9Minecraft6updateEv");
+    }
     minecraft_client_construct = (minecraft_client_construct_t)android_dlsym(handle, "_ZN15MinecraftClientC2EiPPc");
     minecraft_client_init = (minecraft_client_init_t)android_dlsym(handle, "_ZN15MinecraftClient4initEv");
     app_platform_construct = (app_platform_construct_t)android_dlsym(handle, "_ZN11AppPlatformC2Ev");

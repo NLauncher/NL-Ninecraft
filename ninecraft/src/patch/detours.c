@@ -4,16 +4,26 @@
 #include <ninecraft/patch/patch_address.h>
 
 void detour_disarm(detour_backup_t backup) {
+    if (!backup.addr) {
+        return;
+    }
     patch_address(backup.addr, backup.original, backup.len, PATCH_ADDRESS_PROT_XR);
 }
 
 void detour_rearm(detour_backup_t backup) {
+    if (!backup.addr) {
+        return;
+    }
     patch_address(backup.addr, backup.detour, backup.len, PATCH_ADDRESS_PROT_XR);
 }
 
 detour_backup_t arm_detour(void *target_addr, void *replacement_addr) {
-    uint8_t patch[8];
     detour_backup_t backup;
+    memset(&backup, 0, sizeof(detour_backup_t));
+    if (!target_addr || !replacement_addr) {
+        return backup;
+    }
+    uint8_t patch[8];
     backup.len = 8;
     if ((uintptr_t)target_addr & 1) {
         uintptr_t addr = (uintptr_t)target_addr & ~1;
@@ -40,8 +50,12 @@ detour_backup_t arm_detour(void *target_addr, void *replacement_addr) {
 }
 
 detour_backup_t x86_detour(void *target_addr, void *replacement_addr, bool jump) {
-    uint8_t patch[5];
     detour_backup_t backup;
+    memset(&backup, 0, sizeof(detour_backup_t));
+    if (!target_addr || !replacement_addr) {
+        return backup;
+    }
+    uint8_t patch[5];
     backup.len = 5;
     backup.addr = target_addr;
     memcpy(backup.original, target_addr, 5);

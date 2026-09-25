@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.1)
+cmake_minimum_required(VERSION 3.5...3.31)
 project(ninecraft)
 
 include_directories(${PROJECT_SOURCE_DIR}/stb)
@@ -18,5 +18,6 @@ add_subdirectory(glad/cmake)
 glad_add_library(glad REPRODUCIBLE LOADER API egl=1.5 gl:compatibility=2.0)
 add_subdirectory(zlib)
 add_subdirectory(ancmp)
+add_subdirectory(anjni)
 add_subdirectory(SDL)
 add_subdirectory(ninecraft)

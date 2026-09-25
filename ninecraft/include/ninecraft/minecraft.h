@@ -418,6 +418,27 @@
 #endif
 
 #if defined(__i386__) || defined(_M_IX86)
+#define MINECRAFTCLIENT_SIZE_0_16_0_5 0x800
+#define MINECRAFTCLIENT_SIZE_0_15_90_8 0x800
+#define MINECRAFTCLIENT_SIZE_0_15_90_7 0x800
+#define MINECRAFTCLIENT_SIZE_0_15_90_2 0x800
+#define MINECRAFTCLIENT_SIZE_0_15_90_1 0x800
+#define MINECRAFTCLIENT_SIZE_0_15_90_0 0x800
+#define MINECRAFTCLIENT_SIZE_0_15_8 0x400
+#define MINECRAFTCLIENT_SIZE_0_15_7_2 0x400
+#define MINECRAFTCLIENT_SIZE_0_15_6 0x400
+#define MINECRAFTCLIENT_SIZE_0_15_4 0x400
+#define MINECRAFTCLIENT_SIZE_0_15_3_2 0x400
+#define MINECRAFTCLIENT_SIZE_0_15_1_2 0x400
+#define MINECRAFTCLIENT_SIZE_0_15_0_1 0x400
+#define MINECRAFTCLIENT_SIZE_0_14_3_2 0x300
+#define MINECRAFTCLIENT_SIZE_0_14_3_1 0x300
+#define MINECRAFTCLIENT_SIZE_0_13_2_3 0x200
+#define MINECRAFTCLIENT_SIZE_0_13_2_2 0x200
+#define MINECRAFTCLIENT_SIZE_0_13_2_1 0x200
+#define MINECRAFTCLIENT_SIZE_0_12_3 0x200
+#define MINECRAFTCLIENT_SIZE_0_12_2 0x200
+#define MINECRAFTCLIENT_SIZE_0_12_1 0x200
 #define MINECRAFTCLIENT_SIZE_0_11_1 0x18C
 #define MINECRAFTCLIENT_SIZE_0_11_0 0x13c
 #define MINECRAFTCLIENT_SIZE_0_10_5 0x12c
@@ -428,6 +449,27 @@
 #define MINECRAFTCLIENT_SIZE_0_10_0 0x12c
 #else
 #if defined(__arm__) || defined(_M_ARM)
+#define MINECRAFTCLIENT_SIZE_0_16_0_5 0x800
+#define MINECRAFTCLIENT_SIZE_0_15_90_8 0x800
+#define MINECRAFTCLIENT_SIZE_0_15_90_7 0x800
+#define MINECRAFTCLIENT_SIZE_0_15_90_2 0x800
+#define MINECRAFTCLIENT_SIZE_0_15_90_1 0x800
+#define MINECRAFTCLIENT_SIZE_0_15_90_0 0x800
+#define MINECRAFTCLIENT_SIZE_0_15_8 0x400
+#define MINECRAFTCLIENT_SIZE_0_15_7_2 0x400
+#define MINECRAFTCLIENT_SIZE_0_15_6 0x400
+#define MINECRAFTCLIENT_SIZE_0_15_4 0x400
+#define MINECRAFTCLIENT_SIZE_0_15_3_2 0x400
+#define MINECRAFTCLIENT_SIZE_0_15_1_2 0x400
+#define MINECRAFTCLIENT_SIZE_0_15_0_1 0x400
+#define MINECRAFTCLIENT_SIZE_0_14_3_2 0x300
+#define MINECRAFTCLIENT_SIZE_0_14_3_1 0x300
+#define MINECRAFTCLIENT_SIZE_0_13_2_3 0x200
+#define MINECRAFTCLIENT_SIZE_0_13_2_2 0x200
+#define MINECRAFTCLIENT_SIZE_0_13_2_1 0x200
+#define MINECRAFTCLIENT_SIZE_0_12_3 0x200
+#define MINECRAFTCLIENT_SIZE_0_12_2 0x200
+#define MINECRAFTCLIENT_SIZE_0_12_1 0x200
 #define MINECRAFTCLIENT_SIZE_0_11_1 0x190
 #define MINECRAFTCLIENT_SIZE_0_11_0 0x140
 #define MINECRAFTCLIENT_SIZE_0_10_5 0x130
@@ -653,6 +695,14 @@ extern ninecraft_app_handle_back_t ninecraft_app_handle_back;
 typedef void (*minecraft_client_set_size_t)(void *minecraft_client, uint32_t width, uint32_t height, float px);
 
 extern minecraft_client_set_size_t minecraft_client_set_size;
+
+typedef void (*minecraft_client_set_ui_size_and_scale_t)(void *minecraft_client, int width, int height, float scale);
+
+extern minecraft_client_set_ui_size_and_scale_t minecraft_client_set_ui_size_and_scale;
+
+typedef void (*minecraft_client_set_rendering_size_t)(void *minecraft_client, int width, int height);
+
+extern minecraft_client_set_rendering_size_t minecraft_client_set_rendering_size;
 
 typedef void (*minecraft_client_handle_back_t)(void *minecraft_client, bool keep_screen);
 

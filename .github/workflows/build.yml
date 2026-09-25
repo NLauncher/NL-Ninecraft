@@ -20,8 +20,8 @@ jobs:
     - name: Install Dependencies
       run: |
         sudo dpkg --add-architecture i386
-        sudo apt update
-        sudo apt install -y git make cmake unzip python3-jinja2 zenity gcc g++ gcc-multilib g++-multilib libopenal-dev:i386 libx11-dev:i386 libxrandr-dev:i386 libxinerama-dev:i386 libxcursor-dev:i386 libxi-dev:i386 libgl-dev:i386 libwayland-dev:i386 libpulse-dev:i386 libxkbcommon-dev:i386 libegl-dev:i386 libasound2-dev:i386
+        sudo apt-get update
+        sudo apt-get install -y git make cmake unzip python3-jinja2 zenity gcc-i686-linux-gnu g++-i686-linux-gnu libopenal-dev:i386 libx11-dev:i386 libxrandr-dev:i386 libxinerama-dev:i386 libxcursor-dev:i386 libxi-dev:i386 libgl-dev:i386 libwayland-dev:i386 libpulse-dev:i386 libxkbcommon-dev:i386 libegl-dev:i386 libasound2-dev:i386
     - name: Build
       run: |
         mkdir -p build-i686
@@ -34,41 +34,23 @@ jobs:
         name: ninecraft-linux-i686
         path: build-i686/ninecraft/ninecraft
 
-  build-linux-x86_64:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-      with:
-        submodules: recursive
-    - name: Install Dependencies
-      run: |
-        sudo apt update
-        sudo apt install -y git make cmake unzip python3-jinja2 zenity gcc g++ libopenal-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl-dev libwayland-dev libpulse-dev libxkbcommon-dev libegl-dev libasound2-dev
-    - name: Build
-      run: |
-        mkdir -p build-x86_64
-        cd build-x86_64
-        cmake .. -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-        make -j$(nproc)
-    - name: Upload Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: ninecraft-linux-x86_64
-        path: build-x86_64/ninecraft/ninecraft
-
   build-linux-armhf:
     runs-on: ubuntu-latest
     container:
       image: debian:bookworm
     steps:
+    - name: Install Git
+      run: |
+        apt-get update
+        apt-get install -y git ca-certificates
     - uses: actions/checkout@v4
       with:
         submodules: recursive
     - name: Install Dependencies
       run: |
         dpkg --add-architecture armhf
-        apt update
-        apt install -y git make cmake unzip python3-jinja2 zenity gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf libopenal-dev:armhf libx11-dev:armhf libxrandr-dev:armhf libxinerama-dev:armhf libxcursor-dev:armhf libxi-dev:armhf libgl-dev:armhf libwayland-dev:armhf libpulse-dev:armhf libxkbcommon-dev:armhf libegl-dev:armhf libasound2-dev:armhf
+        apt-get update
+        apt-get install -y make cmake unzip python3-jinja2 zenity gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf libopenal-dev:armhf libx11-dev:armhf libxrandr-dev:armhf libxinerama-dev:armhf libxcursor-dev:armhf libxi-dev:armhf libgl-dev:armhf libwayland-dev:armhf libpulse-dev:armhf libxkbcommon-dev:armhf libegl-dev:armhf libasound2-dev:armhf
     - name: Build
       run: |
         mkdir -p build-arm
@@ -83,9 +65,6 @@ jobs:
 
   build-windows:
     runs-on: windows-latest
-    strategy:
-      matrix:
-        arch: [Win32, x64]
     steps:
     - uses: actions/checkout@v4
       with:
@@ -99,14 +78,11 @@ jobs:
         python -m pip install --upgrade pip
         python -m pip install jinja2
     - name: Configure CMake
-      run: cmake -B ${{ github.workspace }}/build -A ${{ matrix.arch }} -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DPYTHON_EXECUTABLE=${{ env.pythonLocation }}/python.exe
+      run: cmake -B ${{ github.workspace }}/build -A Win32 -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DPYTHON_EXECUTABLE=${{ env.pythonLocation }}/python.exe
     - name: Build
       run: cmake --build ${{ github.workspace }}/build --config ${{ env.BUILD_TYPE }}
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: ninecraft-windows-${{ matrix.arch }}
-        path: |
-          build/ninecraft/${{ env.BUILD_TYPE }}/ninecraft.exe
-          internal_overrides
-
+        name: ninecraft-windows-Win32
+        path: build/ninecraft/${{ env.BUILD_TYPE }}/ninecraft.exe

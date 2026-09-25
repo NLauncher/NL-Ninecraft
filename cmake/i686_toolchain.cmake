@@ -2,7 +2,12 @@ set(CMAKE_SYSTEM_NAME Linux)
 
 if(NOT ${CMAKE_HOST_SYSTEM_PROCESSOR} MATCHES "(i386)|(i686)")
     set(CMAKE_SYSTEM_PROCESSOR i386)
-    if(${CMAKE_HOST_SYSTEM_PROCESSOR} MATCHES "(amd64)|(x86_64)")
+    find_program(I686_GCC i686-linux-gnu-gcc)
+    if(I686_GCC)
+        set(CMAKE_C_COMPILER i686-linux-gnu-gcc)
+        set(CMAKE_CXX_COMPILER i686-linux-gnu-g++)
+        set(CMAKE_ASM_COMPILER i686-linux-gnu-gcc)
+    elseif(${CMAKE_HOST_SYSTEM_PROCESSOR} MATCHES "(amd64)|(x86_64)")
         set(CMAKE_C_COMPILER gcc)
         set(CMAKE_CXX_COMPILER g++)
         set(CMAKE_ASM_COMPILER gcc)
@@ -15,9 +20,10 @@ if(NOT ${CMAKE_HOST_SYSTEM_PROCESSOR} MATCHES "(i386)|(i686)")
     endif()
 endif()
 
-set(CMAKE_FIND_ROOT_PATH /usr)
+set(CMAKE_FIND_ROOT_PATH /usr /usr/i686-linux-gnu)
 
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+

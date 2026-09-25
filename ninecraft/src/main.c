@@ -2164,6 +2164,7 @@ int main(int argc, char **argv) {
     struct soinfo *so_liblog, *so_libgles, *so_libgles2, *so_libegl;
     struct soinfo *so_libandroid, *so_libopensles, *so_libz, *so_libgnustl_shared, *so_libfmod;
     char *storage_path, *mods_path, *ovc_path, *icon_path, *global_overrides_path;
+    char worlds_dir[1024], mcpe_dir[1024], res_packs_file[1024];
     static struct stat st = {0};
     int icon_width, icon_height;
     SDL_GLContext gl_context;
@@ -2238,18 +2239,16 @@ int main(int argc, char **argv) {
         mkdir(storage_path, 0700);
     }
 
-    char worlds_dir[1024];
     snprintf(worlds_dir, sizeof(worlds_dir), "%s/minecraftWorlds", storage_path);
     if (stat(worlds_dir, &st) == -1) {
         mkdir(worlds_dir, 0700);
     }
 
-    char mcpe_dir[1024];
     snprintf(mcpe_dir, sizeof(mcpe_dir), "%sminecraftpe", storage_path);
     if (stat(mcpe_dir, &st) == -1) {
         mkdir(mcpe_dir, 0700);
     }
-    char res_packs_file[1024];
+
     snprintf(res_packs_file, sizeof(res_packs_file), "%sminecraftpe/resource_packs.txt", storage_path);
     if (stat(res_packs_file, &st) == -1 || st.st_size == 0) {
         FILE *f = fopen(res_packs_file, "w");

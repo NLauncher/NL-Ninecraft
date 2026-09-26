@@ -2582,7 +2582,11 @@ int main(int argc, char **argv) {
         }
     } else {
         uintptr_t storage_offset = 0;
-        if (version_id >= version_id_0_14_3_1 && version_id <= version_id_0_14_3_2) {
+        if (version_id >= version_id_0_15_90_0) {
+            storage_offset = 0x44;
+        } else if (version_id >= version_id_0_15_0_1 && version_id <= version_id_0_15_8) {
+            storage_offset = 0x3c;
+        } else if (version_id >= version_id_0_14_3_1 && version_id <= version_id_0_14_3_2) {
             storage_offset = 0x4c;
         } else if (version_id >= version_id_0_13_2_1 && version_id <= version_id_0_13_2_3) {
             storage_offset = 0x44;

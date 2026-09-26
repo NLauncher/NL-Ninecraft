@@ -29,3 +29,4 @@ result/
 result
 result*
 apks/*
+.github/workflows/auto-update-nix.yml

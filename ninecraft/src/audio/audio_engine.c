@@ -37,8 +37,13 @@ static SDL_AudioSpec audio_engine_audio_spec;
 
 static bool audio_engine_initialized = false;
 
-static uint8_t *audio_engine_buffer = NULL;
-static SDL_sem *audio_engine_sem = NULL;
+#define AUDIO_RING_BUFFER_SIZE 65536
+static float audio_ring_buffer[AUDIO_RING_BUFFER_SIZE];
+static uint32_t audio_ring_read_pos = 0;
+static uint32_t audio_ring_write_pos = 0;
+static uint32_t audio_ring_available = 0;
+static SDL_mutex *audio_engine_mutex = NULL;
+static SDL_cond *audio_engine_cond = NULL;
 
 static float audio_engine_decode_sample(uint8_t *sample_data, uint32_t sample_size, uint32_t format) {
     float sample = 0;
@@ -210,15 +215,28 @@ static void SDLCALL audio_engine_audio_callback(void *userdata, Uint8 *stream, i
         audio_engine_mix_buffer_size = sample_count;
     }
 
-    if (audio_engine_buffer) {
-        memcpy(audio_engine_mix_buffer, audio_engine_buffer, sample_count * sizeof(float));
-        memset(audio_engine_buffer, 0, sample_count * sizeof(float));
+    if (audio_engine_mutex) {
+        SDL_LockMutex(audio_engine_mutex);
+        uint32_t to_copy = (uint32_t)sample_count;
+        if (to_copy > audio_ring_available) {
+            to_copy = audio_ring_available;
+        }
+        for (uint32_t i = 0; i < to_copy; ++i) {
+            audio_engine_mix_buffer[i] = audio_ring_buffer[audio_ring_read_pos];
+            audio_ring_read_pos = (audio_ring_read_pos + 1) % AUDIO_RING_BUFFER_SIZE;
+        }
+        audio_ring_available -= to_copy;
+        if (to_copy < (uint32_t)sample_count) {
+            memset(&audio_engine_mix_buffer[to_copy], 0, (sample_count - to_copy) * sizeof(float));
+        }
+        if (audio_engine_cond) {
+            SDL_CondSignal(audio_engine_cond);
+        }
+        SDL_UnlockMutex(audio_engine_mutex);
     } else {
         memset(audio_engine_mix_buffer, 0, sample_count * sizeof(float));
     }
-    if (audio_engine_sem) {
-        SDL_SemPost(audio_engine_sem);
-    }
+
     for (int i = 0; i < AUDIO_ENGINE_MAX_STREAMS; ++i) {
         audio_engine_stream_t *audio_engine_stream = &audio_engine_streams[i];
         if (audio_engine_stream->active) {
@@ -231,30 +249,42 @@ static void SDLCALL audio_engine_audio_callback(void *userdata, Uint8 *stream, i
 }
 
 void audio_engine_write(uint8_t *buffer, uint32_t buffer_size, uint32_t num_channels, uint32_t bits_per_sample, uint32_t freq, uint32_t format, uint32_t endianess, float gain, float pitch) {
-    if (audio_engine_initialized && buffer && buffer_size) {
+    if (audio_engine_initialized && buffer && buffer_size && audio_engine_audio_spec.freq > 0 && audio_engine_audio_spec.channels > 0) {
         int sample_size = bits_per_sample / 8;
-        uint32_t frame_size = (bits_per_sample / 8) * num_channels;
+        uint32_t frame_size = sample_size * num_channels;
+        if (frame_size == 0) {
+            return;
+        }
         uint32_t frame_count = buffer_size / frame_size;
         float sample_pos = 0;
         float rate_ratio = ((float)freq * pitch) / (float)audio_engine_audio_spec.freq;
+        if (rate_ratio <= 0.0f) {
+            return;
+        }
 
-        size_t out_frame_count = (size_t)((float)frame_count / rate_ratio) + 1;
+        size_t out_frame_count = (size_t)((float)frame_count / rate_ratio);
+        if (out_frame_count == 0) {
+            return;
+        }
         size_t out_sample_count = out_frame_count * audio_engine_audio_spec.channels;
         size_t out_stream_size = out_sample_count * sizeof(float);
         float *out_stream = (float *)calloc(out_stream_size, 1);
-
         if (!out_stream) {
             return;
         }
 
-        for (int i = 0; i < out_sample_count; i += audio_engine_audio_spec.channels) {
+        for (size_t i = 0; i < out_sample_count; i += audio_engine_audio_spec.channels) {
             size_t frame_pos = (size_t)sample_pos;
-            if (frame_pos >= frame_count - 1) {
+            if (frame_pos >= frame_count) {
                 break;
             }
             float frac = sample_pos - (float)frame_pos;
+            size_t next_pos = frame_pos + 1;
+            if (next_pos >= frame_count) {
+                next_pos = frame_pos;
+            }
             uint8_t *frame1 = &buffer[frame_pos * frame_size];
-            uint8_t *frame2 = &buffer[(frame_pos + 1) * frame_size];
+            uint8_t *frame2 = &buffer[next_pos * frame_size];
             uint32_t max_channels = (num_channels < audio_engine_audio_spec.channels) ? audio_engine_audio_spec.channels : num_channels;
 
             for (int ch = 0; ch < (int)max_channels; ++ch) {
@@ -270,24 +300,32 @@ void audio_engine_write(uint8_t *buffer, uint32_t buffer_size, uint32_t num_chan
             sample_pos += rate_ratio;
         }
 
-        size_t chunk_size = audio_engine_audio_spec.samples * audio_engine_audio_spec.channels * sizeof(float);
-        size_t c = out_stream_size / chunk_size;
-        size_t len_nr = c * chunk_size;
-        size_t remaining = out_stream_size - len_nr;
+        if (audio_engine_mutex) {
+            SDL_LockMutex(audio_engine_mutex);
+            size_t written = 0;
+            uint32_t max_buffered = audio_engine_audio_spec.samples * audio_engine_audio_spec.channels * 4;
+            while (written < out_sample_count) {
+                while (audio_ring_available >= max_buffered && audio_engine_initialized) {
+                    SDL_CondWait(audio_engine_cond, audio_engine_mutex);
+                }
+                if (!audio_engine_initialized) {
+                    break;
+                }
+                uint32_t space = AUDIO_RING_BUFFER_SIZE - audio_ring_available;
+                uint32_t to_write = (uint32_t)(out_sample_count - written);
+                if (to_write > space) {
+                    to_write = space;
+                }
+                for (uint32_t s = 0; s < to_write; ++s) {
+                    audio_ring_buffer[audio_ring_write_pos] = out_stream[written + s];
+                    audio_ring_write_pos = (audio_ring_write_pos + 1) % AUDIO_RING_BUFFER_SIZE;
+                }
+                audio_ring_available += to_write;
+                written += to_write;
+            }
+            SDL_UnlockMutex(audio_engine_mutex);
+        }
 
-        for (int i = 0; i < c; ++i) {
-            SDL_SemWait(audio_engine_sem);
-            SDL_LockAudioDevice(audio_engine_device);
-            memcpy(audio_engine_buffer, &out_stream[i * chunk_size], chunk_size);
-            SDL_UnlockAudioDevice(audio_engine_device);
-        }
-        if (remaining) {
-            SDL_SemWait(audio_engine_sem);
-            SDL_LockAudioDevice(audio_engine_device);
-            memcpy(audio_engine_buffer, &out_stream[len_nr], remaining);
-            SDL_UnlockAudioDevice(audio_engine_device);
-        }
-        
         free(out_stream);
     }
 }
@@ -369,7 +407,7 @@ void audio_engine_init() {
         desired_spec.freq = 44100;
         desired_spec.format = AUDIO_F32LSB;
         desired_spec.channels = 2;
-        desired_spec.samples = 4096;
+        desired_spec.samples = 512;
         desired_spec.callback = audio_engine_audio_callback;
 
         for (int i = 0; fallback_drivers[i] != NULL; ++i) {
@@ -396,9 +434,28 @@ void audio_engine_init() {
         }
 
         if (!opened) {
-            SDL_InitSubSystem(SDL_INIT_AUDIO);
-            if (audio_engine_try_open(&desired_spec)) {
-                opened = 1;
+            SDL_setenv("SDL_AUDIODRIVER", "", 1);
+            if (SDL_InitSubSystem(SDL_INIT_AUDIO) >= 0) {
+                if (audio_engine_try_open(&desired_spec)) {
+                    printf("Audio: using driver '%s'\n",
+                           SDL_GetCurrentAudioDriver());
+                    opened = 1;
+                } else {
+                    SDL_QuitSubSystem(SDL_INIT_AUDIO);
+                }
+            }
+        }
+
+        if (!opened) {
+            SDL_setenv("SDL_AUDIODRIVER", "dummy", 1);
+            if (SDL_InitSubSystem(SDL_INIT_AUDIO) >= 0) {
+                if (audio_engine_try_open(&desired_spec)) {
+                    printf("Audio: using fallback driver '%s'\n",
+                           SDL_GetCurrentAudioDriver());
+                    opened = 1;
+                } else {
+                    SDL_QuitSubSystem(SDL_INIT_AUDIO);
+                }
             }
         }
 
@@ -414,17 +471,19 @@ void audio_engine_init() {
                audio_engine_audio_spec.samples,
                audio_engine_audio_spec.format);
 
-        audio_engine_sem = SDL_CreateSemaphore(0);
-        if (!audio_engine_sem) {
-            printf("SDL_CreateSemaphore failed: %s\n", SDL_GetError());
+        audio_engine_mutex = SDL_CreateMutex();
+        if (!audio_engine_mutex) {
+            printf("SDL_CreateMutex failed: %s\n", SDL_GetError());
             return;
         }
-
-        audio_engine_buffer = calloc(audio_engine_audio_spec.samples * audio_engine_audio_spec.channels * sizeof(float), 1);
-        if (!audio_engine_buffer) {
-            puts("Failed to allocate memory");
+        audio_engine_cond = SDL_CreateCond();
+        if (!audio_engine_cond) {
+            printf("SDL_CreateCond failed: %s\n", SDL_GetError());
             return;
         }
+        audio_ring_read_pos = 0;
+        audio_ring_write_pos = 0;
+        audio_ring_available = 0;
 
         SDL_PauseAudioDevice(audio_engine_device, 0);
         memset(audio_engine_streams, 0, sizeof(audio_engine_streams));
@@ -438,13 +497,19 @@ void audio_engine_destroy() {
             SDL_CloseAudioDevice(audio_engine_device);
             audio_engine_device = 0;
         }
-        if (audio_engine_sem) {
-            SDL_DestroySemaphore(audio_engine_sem);
-            audio_engine_sem = NULL;
-        }
-        if (audio_engine_buffer) {
-            free(audio_engine_buffer);
-            audio_engine_buffer = NULL;
+        if (audio_engine_mutex) {
+            SDL_LockMutex(audio_engine_mutex);
+            audio_engine_initialized = false;
+            if (audio_engine_cond) {
+                SDL_CondBroadcast(audio_engine_cond);
+            }
+            SDL_UnlockMutex(audio_engine_mutex);
+            if (audio_engine_cond) {
+                SDL_DestroyCond(audio_engine_cond);
+                audio_engine_cond = NULL;
+            }
+            SDL_DestroyMutex(audio_engine_mutex);
+            audio_engine_mutex = NULL;
         }
         if (audio_engine_mix_buffer) {
             free(audio_engine_mix_buffer);

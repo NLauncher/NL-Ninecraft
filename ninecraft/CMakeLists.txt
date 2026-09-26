@@ -15,7 +15,7 @@ if(MSVC)
 endif()
 
 if(WIN32)
-    target_link_libraries(ninecraft opengl32 ws2_32)
+    target_link_libraries(ninecraft opengl32 ws2_32 winmm imm32 version setupapi user32 gdi32 shell32 advapi32 ole32 oleaut32)
 endif()
 
 target_link_libraries(ninecraft ${CMAKE_DL_LIBS} zlibstatic SDL2::SDL2 SDL2main glad ancmp anjni)

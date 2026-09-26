@@ -256,31 +256,37 @@ static void *get_current_screen(void) {
 
 static void mouse_scroll_callback(struct SDL_Window *window, float xoffset, float yoffset, int direction) {
     char key_code = 0;
-    float offset = (direction == SDL_MOUSEWHEEL_NORMAL) ? yoffset : xoffset;
-    if (version_id < version_id_0_12_1) {
-        void *screen = get_current_screen();
-        if (screen && !mouse_pointer_hidden) {
+    float offset = (direction == SDL_MOUSEWHEEL_FLIPPED) ? -yoffset : yoffset;
+    if (offset == 0.0f && xoffset != 0.0f) {
+        offset = xoffset;
+    }
+    void *screen = get_current_screen();
+    if (screen && !mouse_pointer_hidden) {
+        void (*client_handle_direction)(void *, int, float, float) = (void (*)(void *, int, float, float))android_dlsym(handle, "_ZN15MinecraftClient15handleDirectionE11DirectionIdff");
+        if (client_handle_direction) {
+            client_handle_direction(ninecraft_app, 2, 0.0f, offset * 30.0f);
+        } else {
             void (*screen_handle_direction)(void *, int, float, float) = (void (*)(void *, int, float, float))android_dlsym(handle, "_ZN6Screen15handleDirectionE11DirectionIdff");
             if (screen_handle_direction) {
                 screen_handle_direction(screen, 2, 0.0f, offset * 30.0f);
             }
         }
-    }
-    if (version_id >= version_id_0_12_1) {
-        void (*mouse_feed)(char, char, short, short, short, short) = (void (*)(char, char, short, short, short, short))android_dlsym(handle, "_ZN5Mouse4feedEccssss");
-        if (mouse_feed) {
-            char dir = (char)(offset > 0 ? 1 : -1);
-            mouse_feed(4, dir, (short)last_mouse_x, (short)last_mouse_y, 0, (short)(offset * 120));
-            mouse_feed(3, (char)(offset > 0 ? 127 : -128), (short)last_mouse_x, (short)last_mouse_y, 0, 0);
-        }
     } else {
-        if (offset > 0) {
-            key_code = MCKEY_MENU_PREVIOUS;
-        } else if (offset < 0) {
-            key_code = MCKEY_MENU_NEXT;
+        if (version_id >= version_id_0_12_1) {
+            void (*mouse_feed)(char, char, short, short, short, short) = (void (*)(char, char, short, short, short, short))android_dlsym(handle, "_ZN5Mouse4feedEccssss");
+            if (mouse_feed) {
+                char dir = (char)(offset > 0 ? 1 : -1);
+                mouse_feed(4, dir, (short)last_mouse_x, (short)last_mouse_y, 0, (short)(offset * 120));
+            }
+        } else {
+            if (offset > 0) {
+                key_code = MCKEY_MENU_PREVIOUS;
+            } else if (offset < 0) {
+                key_code = MCKEY_MENU_NEXT;
+            }
+            keyboard_feed(key_code, 1);
+            keyboard_feed(key_code, 0);
         }
-        keyboard_feed(key_code, 1);
-        keyboard_feed(key_code, 0);
     }
 }
 
@@ -2126,6 +2132,58 @@ void xbox_init_sign_in_activity(void *ret, void *user_impl, int arg) {
 }
 SYSV_WRAPPER(xbox_init_sign_in_activity, 3);
 
+static detour_backup_t leveldb_open_backup;
+
+#ifndef _WIN32
+static void call_orig_leveldb_open(void *addr, void *ret_status, void *options, android_string_t *name, void **dbptr) {
+    __asm__ volatile (
+        "pushl %[p4]\n"
+        "pushl %[p3]\n"
+        "pushl %[p2]\n"
+        "pushl %[p1]\n"
+        "call *%[fn]\n"
+        "addl $12, %%esp\n"
+        :
+        : [fn]"r"(addr), [p1]"m"(ret_status), [p2]"m"(options), [p3]"m"(name), [p4]"m"(dbptr)
+        : "eax", "ecx", "edx", "memory"
+    );
+}
+#else
+static inline void call_orig_leveldb_open(void *addr, void *ret_status, void *options, android_string_t *name, void **dbptr) {
+    __asm {
+        push dbptr
+        push name
+        push options
+        push ret_status
+        call addr
+        add esp, 12
+    }
+}
+#endif
+
+void hook_leveldb_open(void *ret_status, void *options, android_string_t *name, void **dbptr) {
+    char *path = android_string_to_str(name);
+    if (path) {
+        mkdir(path, 0777);
+    }
+    if (options) {
+        ((uint8_t *)options)[4] = 1;
+    }
+    detour_disarm(leveldb_open_backup);
+    call_orig_leveldb_open(leveldb_open_backup.addr, ret_status, options, name, dbptr);
+    detour_rearm(leveldb_open_backup);
+    const char *state = *(const char **)ret_status;
+    if (state != NULL && path) {
+        char lock_file[1024];
+        snprintf(lock_file, sizeof(lock_file), "%s/LOCK", path);
+        unlink(lock_file);
+        detour_disarm(leveldb_open_backup);
+        call_orig_leveldb_open(leveldb_open_backup.addr, ret_status, options, name, dbptr);
+        detour_rearm(leveldb_open_backup);
+    }
+}
+SYSV_WRAPPER(hook_leveldb_open, 4);
+
 typedef struct {
     void *group;
     void *geom;
@@ -2239,14 +2297,23 @@ int main(int argc, char **argv) {
         mkdir(storage_path, 0700);
     }
 
-    snprintf(worlds_dir, sizeof(worlds_dir), "%s/minecraftWorlds", storage_path);
+    snprintf(worlds_dir, sizeof(worlds_dir), "%sminecraftWorlds", storage_path);
     if (stat(worlds_dir, &st) == -1) {
-        mkdir(worlds_dir, 0700);
+        mkdir(worlds_dir, 0777);
     }
+    char games_dir[1024];
+    snprintf(games_dir, sizeof(games_dir), "%sgames", storage_path);
+    mkdir(games_dir, 0777);
+    char mojang_dir[1024];
+    snprintf(mojang_dir, sizeof(mojang_dir), "%sgames/com.mojang", storage_path);
+    mkdir(mojang_dir, 0777);
+    char games_worlds[1024];
+    snprintf(games_worlds, sizeof(games_worlds), "%sgames/com.mojang/minecraftWorlds", storage_path);
+    mkdir(games_worlds, 0777);
 
     snprintf(mcpe_dir, sizeof(mcpe_dir), "%sminecraftpe", storage_path);
     if (stat(mcpe_dir, &st) == -1) {
-        mkdir(mcpe_dir, 0700);
+        mkdir(mcpe_dir, 0777);
     }
 
     snprintf(res_packs_file, sizeof(res_packs_file), "%sminecraftpe/resource_packs.txt", storage_path);
@@ -2593,7 +2660,14 @@ int main(int argc, char **argv) {
         }
         if (storage_offset) {
             char worlds_path[1024];
-            snprintf(worlds_path, sizeof(worlds_path), "%s/minecraftWorlds", storage_path);
+            struct stat games_st;
+            char games_worlds_check[1024];
+            snprintf(games_worlds_check, sizeof(games_worlds_check), "%sgames/com.mojang/minecraftWorlds", storage_path);
+            if (stat(games_worlds_check, &games_st) == 0) {
+                snprintf(worlds_path, sizeof(worlds_path), "%sgames/com.mojang/minecraftWorlds", storage_path);
+            } else {
+                snprintf(worlds_path, sizeof(worlds_path), "%sminecraftWorlds", storage_path);
+            }
             android_string_equ((android_string_t *)((char *)ninecraft_app + storage_offset), worlds_path);
         }
     }
@@ -2996,6 +3070,10 @@ int main(int argc, char **argv) {
             void *geom_group_get_sym = android_dlsym(handle, "_ZN13GeometryGroup11getGeometryERKSs");
             if (geom_group_get_sym) {
                 geom_group_get_geom_detour = DETOUR(geom_group_get_sym, hook_geometry_group_get_geom, 1);
+            }
+            void *leveldb_open_sym = android_dlsym(handle, "_ZN7leveldb2DB4OpenERKNS_7OptionsERKSsPPS0_");
+            if (leveldb_open_sym) {
+                leveldb_open_backup = DETOUR(leveldb_open_sym, GET_SYSV_WRAPPER(hook_leveldb_open), 1);
             }
         }
         context->platform = plat;

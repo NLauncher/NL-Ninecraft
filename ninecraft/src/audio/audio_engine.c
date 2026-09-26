@@ -3,8 +3,10 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
+#ifndef _WIN32
 #include <dlfcn.h>
 #include <glob.h>
+#endif
 
 #define AUDIO_ENGINE_MAX_STREAMS 64
 
@@ -332,6 +334,7 @@ void audio_engine_write(uint8_t *buffer, uint32_t buffer_size, uint32_t num_chan
 
 void audio_engine_init() {
     if (!audio_engine_initialized) {
+#ifndef _WIN32
         const char *lib_candidates[] = {
             "libasound.so.2",
             "/usr/lib/libasound.so.2",
@@ -389,11 +392,18 @@ void audio_engine_init() {
                 globfree(&globbuf);
             }
         }
+#endif
 
         SDL_AudioSpec desired_spec;
+#ifdef _WIN32
+        const char *fallback_drivers[] = {
+            "wasapi", "directsound", "winmm", NULL
+        };
+#else
         const char *fallback_drivers[] = {
             "pulseaudio", "pipewire", "alsa", "dsp", "jack", "oss", NULL
         };
+#endif
         int opened = 0;
 
         int num_drivers = SDL_GetNumAudioDrivers();
